@@ -50,12 +50,12 @@ def main(args):
 
   num_gpus = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpus']
   gpu_mem_gb = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpu_mem_gb']
-  global_batch = num_gpus * gpu_mem_gb * 2
-  lr = .00025 * num_gpus * gpu_mem_gb / 32
+  global_batch = num_gpus * gpu_mem_gb * 2 * args.machines
+  lr = .00025 * num_gpus * gpu_mem_gb * args.machines / 32
   bs = global_batch // num_gpus
   if '24x' in args.instance_type:
     bs = 96 # nonlinear bs scaling
-    lr = .005
+    lr = .005 * args.machines
 
   # todo(y): consistency with - and _ in args
   # Based on run_wt103_base.sh
