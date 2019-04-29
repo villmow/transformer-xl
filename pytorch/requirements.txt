@@ -4,6 +4,7 @@ pytorch_pretrained_bert
 tensorboardX
 tensorflow  # needed for tensorboardX
 sacremoses
+git+https://github.com/cybertronai/pytorch-lamb
 
 # ncluster subdependencies
 boto3

@@ -35,6 +35,7 @@ from torch.nn.parallel import DistributedDataParallel
 from data_utils import get_lm_corpus
 from mem_transformer import MemTransformerLM
 from lr_finder import LRFinder
+from pytorch_lamb import Lamb, log_lamb_rs
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
@@ -74,7 +75,7 @@ parser.add_argument('--init_std', type=float, default=0.02,
 parser.add_argument('--proj_init_std', type=float, default=0.01,
                     help='parameters initialized by N(0, init_std)')
 parser.add_argument('--optim', default='adam', type=str,
-                    choices=['adam', 'sgd', 'adagrad'],
+                    choices=['adam', 'sgd', 'adagrad', 'lamb'],
                     help='optimizer to use.')
 parser.add_argument('--lr', type=float, default=0.00025,
                     help='initial learning rate (0.00025|5 for adam|sgd)')
@@ -251,6 +252,9 @@ class FileLogger:
       self.logger = self.get_logger(output_dir, log_to_file=is_master)
     else:
       self.logger = NoOp()
+    
+  def exception(*args, **kwargs):
+      return self.logger.exception(*args, **kwargs)
 
   def get_logger(self, output_dir, log_to_file=True):
     logger = logging.getLogger('txl training')
@@ -294,14 +298,19 @@ class timeit:
     """Decorator to measure length of time spent in the block in millis and log
   it to TensorBoard."""
 
-    def __init__(self, tag=""):
+    def __init__(self, tag="", noop=False):
         self.tag = tag
+        self.noop = noop
 
     def __enter__(self):
+        if self.noop:
+            return self
         self.start = time.perf_counter()
         return self
 
     def __exit__(self, *args):
+        if self.noop:
+            return
         self.end = time.perf_counter()
         interval_ms = 1000 * (self.end - self.start)
         global_timeit_dict.setdefault(self.tag, []).append(interval_ms)
@@ -487,6 +496,8 @@ if args.optim.lower() == 'sgd':
     else:
         optimizer = optim.SGD(model.parameters(), lr=args.lr,
             momentum=args.mom)
+elif args.optim.lower() == 'lamb':
+    optimizer = Lamb(model.parameters(), lr=args.lr)
 else:
     assert args.optim.lower() == 'adam'
     if args.sample_softmax > 0:
@@ -499,6 +510,7 @@ else:
         optimizer_sparse = optim.SparseAdam(sparse_params, lr=args.lr)
         optimizer = optim.Adam(dense_params, lr=args.lr)
     else:
+        # TODO(b): try , betas=(0.9, 0.99))
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
 #### scheduler
@@ -634,7 +646,7 @@ def train():
             for i in range(args.batch_chunk):
                 data_i = data_chunks[i].contiguous()
                 target_i = target_chunks[i].contiguous()
-                with timeit('model'):
+                with timeit('model', noop=train_step % args.log_interval != 0):
                     ret = model(data_i, target_i, *mems[i])
                 loss, mems[i] = ret[0], ret[1:]
                 loss = loss.float().mean().type_as(loss) / args.batch_chunk
@@ -647,7 +659,7 @@ def train():
             ret = model(data, target, *mems)
             loss, mems = ret[0], ret[1:]
             loss = loss.float().mean().type_as(loss)
-            with timeit('backwards'):
+            with timeit('backwards', noop=train_step % args.log_interval != 0):
               if args.fp16:
                   optimizer.backward(loss)
               else:
@@ -698,6 +710,8 @@ def train():
             log_tb('loss/ppl', math.exp(cur_loss))
             log_tb('times/step', 1000*elapsed/args.log_interval)
             log_tb('lr', optimizer.param_groups[0]['lr'])
+            if args.optim == 'lamb':
+                log_lamb_rs(optimizer, event_writer, global_token_count)
 
             time_per_batch = elapsed / args.log_interval
             time_per_sample = time_per_batch / args.batch_size
