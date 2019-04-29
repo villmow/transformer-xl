@@ -11,36 +11,40 @@ parser.add_argument('--machines', type=int, default=1,
                     help="how many machines to use")
 parser.add_argument('--instance_type', type=str, default="p3.16xlarge",
                     help="how many machines to use")
-parser.add_argument('--image_name', type=str,
-                    default='Deep Learning AMI (Ubuntu) Version 22.0',
-                    help="name of AMI to use ")
-parser.add_argument('--spot', action='store_true',
-                    help='Use spot instance')
+parser.add_argument('--nospot', action='store_true',
+                    help='Use more expensive on-demand instance')
 parser.add_argument('--ncluster_backend', type=str, default='aws',
                     help='Use spot instance')
 
+parser.add_argument('--skip_setup', action='store_true',
+                    help='Make startup slightly faster by skiping various initialization tasks, like tmux/efs setup. Only use on reruns.')
 
-# routines to build NCCL ring orders
-def get_nccl_params(_num_tasks, _num_gpus):
-  return 'NCCL_DEBUG=VERSION'
+# environment/dependencies
+parser.add_argument('--image_name', type=str, default='reference03',
+                    help="name of AMI to use ")
+parser.add_argument('--conda_env', type=str, default='pytorch_p36',
+                    help='which conda env to use')
+
+
+def get_nccl_params(_num_tasks, _num_gpus): return 'NCCL_DEBUG=VERSION'
 
 
 def main(args):
   ncluster.set_backend(args.ncluster_backend)
-  ncluster.set_logdir_root('/ncluster/runs.new')
+  ncluster.set_logdir_root('/ncluster/runs.new') # TODO(y): /ncluster/runs
   job = ncluster.make_job(name=args.name,
                           run_name=f"{args.name}",
                           num_tasks=args.machines,
                           image_name=args.image_name,
                           instance_type=args.instance_type,
-                          spot=args.spot)
+                          spot=not args.nospot,
+                          skip_setup=args.skip_setup)
+
+  # Uncomment if using regular DLAMI which doesn't have these installed
+  #  'pip install -U protobuf' # tensorflow/models/issues/3995
 
   job.rsync('.')
-  job.run('killall python || echo failed && '  # kill previous run
-          'source activate pytorch_p36 && ' +
-          'pip install -r requirements.txt && ' +
-          # workaround for https://github.com/tensorflow/models/issues/3995
-          'pip install -U protobuf')
+  job.run('killall python || pip install -r requirements.txt && echo failed && source activate pytorch_p36')
 
   # Training script args
   default_params = [
@@ -51,14 +55,17 @@ def main(args):
   num_gpus = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpus']
   gpu_mem_gb = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpu_mem_gb']
   global_batch = num_gpus * gpu_mem_gb * 2 * args.machines
+  print("using global batch ", global_batch)  # 512
   lr = .00025 * num_gpus * gpu_mem_gb * args.machines / 32
   bs = global_batch // num_gpus
+  print("using local batch ", bs)  # 64
   if '24x' in args.instance_type:
     bs = 96 # nonlinear bs scaling
     lr = .005 * args.machines
 
   # todo(y): consistency with - and _ in args
   # Based on run_wt103_base.sh
+  # todo(y): data should be baked into image rather than EFS
   training_params = [
     '--seed', 1111,
     '--data', '/ncluster/data/transformer-xl-data/wikitext-103',
