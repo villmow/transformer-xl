@@ -82,6 +82,8 @@ parser.add_argument('--lr', type=float, default=0.00025,
                     help='initial learning rate (0.00025|5 for adam|sgd)')
 parser.add_argument('--mom', type=float, default=0.0,
                     help='momentum for sgd')
+parser.add_argument('--wd', type=float, default=0,
+                    help='weight decay for adam|lamb)')
 parser.add_argument('--scheduler', default='cosine', type=str,
                     choices=['cosine', 'inv_sqrt', 'dev_perf', 'constant', 'finder'],
                     help='lr scheduler to use.')
@@ -263,8 +265,8 @@ class FileLogger:
     else:
       self.logger = NoOp()
     
-  def exception(*args, **kwargs):
-      return self.logger.exception(*args, **kwargs)
+  def exception(self, *args, **kwargs):
+    return self.logger.exception(*args, **kwargs)
 
   def get_logger(self, output_dir, log_to_file=True):
     logger = logging.getLogger('txl training')
@@ -520,7 +522,7 @@ if args.optim.lower() == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr,
             momentum=args.mom)
 elif args.optim.lower() == 'lamb':
-    optimizer = Lamb(model.parameters(), lr=args.lr)
+    optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
 else:
     assert args.optim.lower() == 'adam'
     if args.sample_softmax > 0:
@@ -531,13 +533,10 @@ else:
             else:
                 dense_params.append(param)
         optimizer_sparse = optim.SparseAdam(sparse_params, lr=args.lr)
-        print("using sample softmax")
-        #optimizer = optim.Adam(dense_params, lr=args.lr, eps=1e-3, betas=(.5,.6))
-        optimizer = optim.Adam(dense_params, lr=args.lr)
+        optimizer = optim.Adam(dense_params, lr=args.lr, weight_decay=args.wd)
     else:
         # TODO(b): try , betas=(0.9, 0.99))
-        optimizer = optim.Adam(model.parameters(), lr=args.lr)
-        #optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
 #### scheduler
 if args.scheduler == 'cosine':
@@ -550,7 +549,7 @@ if args.scheduler == 'cosine':
         scheduler_sparse = optim.lr_scheduler.CosineAnnealingLR(optimizer_sparse,
             args.max_tokens, eta_min=args.eta_min) # should use eta_min arg
 elif args.scheduler == 'finder':
-    scheduler = LRFinder(optimizer, args.max_tokens)
+    scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr/1e3)
 elif args.scheduler == 'inv_sqrt':
     # originally used for Transformer (in Attention is all you need)
     def lr_lambda(step):
