@@ -122,12 +122,18 @@ parser.add_argument('--pre_lnorm', action='store_true',
 parser.add_argument('--varlen', action='store_true',
                     help='use variable length')
 parser.add_argument('--log-interval', type=int, default=200,
-                    help='report interval')
+                    help='logging interval in number of steps')
+parser.add_argument('--retune-interval', type=int, default=5,
+                    help='how often to retune parameters')
 parser.add_argument('--verbose-log-steps', type=int, default=60,
                     help='do logging at every step for this many steps at the start of training')
 
 parser.add_argument('--eval-interval', type=int, default=4000,
-                    help='evaluation interval')
+                    help='evaluation interval in number of steps')
+
+parser.add_argument('--checkpoint-each-epoch', type=int, default=0,
+                    help='whether to save checkpoint at each epoch')
+
 parser.add_argument('--work_dir', default=None, type=str,
                     help='Experiment directory. Defaults to logdir')
 parser.add_argument('--restart', action='store_true',
@@ -183,6 +189,9 @@ parser.add_argument('--auto-shutdown-success-delay-mins', default=10, type=int,
 parser.add_argument('--auto-shutdown-failure-delay-mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
 
+args = parser.parse_args()
+args.tied = not args.not_tied
+
 
 def env_world_size(): return int(os.environ.get('WORLD_SIZE', 1))
 
@@ -208,8 +217,16 @@ class NoOp:
     return no_op
 
 
-args = parser.parse_args()
-args.tied = not args.not_tied
+# todo(y): optimnizer/model are also global variables, fix
+def save_checkpoint(model_1, optimizer_1, suffix=''):
+    if not is_master:
+        return
+    with timeit('save'):
+        with open(args.work_dir+f'/model-{suffix}.pt', 'wb') as f_1:
+            torch.save(model_1, f_1)
+        with open(args.work_dir+f'/optimizer-{suffix}.pt', 'wb') as f_1:
+            torch.save(optimizer_1.state_dict(), f_1)
+
 
 # global variables
 global_timeit_dict = OrderedDict()
@@ -217,6 +234,8 @@ global_example_count = 0
 global_token_count = 0
 event_writer = NoOp()
 logdir = None
+epoch = 0
+train_step = 0
 
 # TODO(y): replace print's with log.console
 
@@ -225,10 +244,12 @@ global_rank = env_rank()
 max_rank = env_world_size()
 torch.cuda.set_device(args.local_rank)
 
+
 def toscalar(t):  # use on python scalars/pytorch scalars
     if isinstance(t, (float, int)): return t
     if hasattr(t, 'item'): return t.item()
     else: return t[0]
+
 
 # install pdb handler on error
 if global_rank == 0:
@@ -619,7 +640,8 @@ def evaluate(eval_iter):
     return total_loss / total_len
 
 def train():
-    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, log_start_time, train_step, last_log_step
+    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, \
+        log_start_time, train_step, last_log_step, epoch
     # Turn on training mode which enables dropout.
     model.train()
 
@@ -649,6 +671,7 @@ def train():
         total_tokens = batch_total.item()*seq_len
 
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
+
         global_token_count += total_tokens
         model.zero_grad()
         if args.batch_chunk > 1:
@@ -671,6 +694,7 @@ def train():
             loss, mems = ret[0], ret[1:]
             loss = loss.float().mean().type_as(loss)
             with timeit('backwards', noop=train_step % args.log_interval != 0):
+              # todo(y): explain this
               if args.fp16:
                   optimizer.backward(loss)
               else:
@@ -754,12 +778,10 @@ def train():
             val_loss = evaluate(va_iter)
             if not best_val_loss or val_loss < best_val_loss:
                 if not args.debug and is_master:
-                    logger.info('Saving checkpoint')
-                    with open(os.path.join(args.work_dir, 'model.pt'), 'wb') as f:
-                        with timeit('save'):
-                            torch.save(model.module if args.distributed else model, f)
-                    with open(os.path.join(args.work_dir, 'optimizer.pt'), 'wb') as f:
-                        torch.save(optimizer.state_dict(), f)
+                    logger.info('Saving checkpoint for new best loss')
+                    save_checkpoint(model.module if args.distributed else model,
+                                    optimizer, suffix='best')
+                    
                 best_val_loss = val_loss
 
             logger.info('-' * 100)
@@ -784,6 +806,12 @@ def train():
             logger.info('End of training')
             raise StopIteration()
 
+    if args.checkpoint_each_epoch:
+        logger.info(f'Saving checkpoint for epoch {epoch}')
+        save_checkpoint(model.module if args.distributed else model,
+                        optimizer, suffix=f'{epoch}')
+
+
 
 
 def main():
@@ -797,8 +825,6 @@ def main():
     if args.distributed:
         logger.info(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
 
-        logger.info('addr', os.environ['MASTER_ADDR'], 'port', os.environ['MASTER_PORT'])
-        
         dist.init_process_group(backend=args.dist_backend,
                                 init_method=args.dist_url,
                                 world_size=env_world_size())
@@ -808,6 +834,7 @@ def main():
         model = DistributedDataParallel(model,
                                         device_ids=[args.local_rank],
                                         output_device=args.local_rank)
+
 
     # global global_example_count, global_token_count, event_writer, logdir
     #    logdir = f'{args.logdir_root}/{args.run_name}-{current_timestamp()}'
@@ -820,6 +847,13 @@ def main():
 
     log_tb("first", time.time())
     event_writer.add_text('args', str(args))
+
+    # test checkpoint writing
+    if args.checkpoint_each_epoch:
+        logger.info(f'Saving checkpoint for epoch {epoch}')
+        save_checkpoint(model.module if args.distributed else model,
+                        optimizer, suffix=f'{epoch}')
+
 
     # Loop over epochs.
     train_step = 0
