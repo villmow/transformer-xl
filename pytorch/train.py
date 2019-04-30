@@ -225,7 +225,10 @@ global_rank = env_rank()
 max_rank = env_world_size()
 torch.cuda.set_device(args.local_rank)
 
-
+def toscalar(t):  # use on python scalars/pytorch scalars
+    if isinstance(t, (float, int)): return t
+    if hasattr(t, 'item'): return t.item()
+    else: return t[0]
 
 # install pdb handler on error
 if global_rank == 0:
@@ -721,8 +724,8 @@ def train():
             log_tb('times/step', 1000*elapsed_time/elapsed_steps)
             current_lr = optimizer.param_groups[0]['lr']
             log_tb('lr', current_lr)
-            log_tb('lr_normalized1', current_lr/batch_total.item())
-            log_tb('lr_normalized2', current_lr/total_tokens.item())
+            log_tb('lr_normalized1', current_lr/toscalar(batch_total))
+            log_tb('lr_normalized2', current_lr/toscalar(total_tokens))
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
 
@@ -786,7 +789,10 @@ def train():
 def main():
     global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, best_val_loss, eval_start_time, log_start_time, epoch, model
 
-    os.system('shutdown -c')  # cancel previous shutdown command
+    if args.local_rank > 0:
+        pass   # skip shutdown when rank is explicitly set + not zero rank
+    else:
+        os.system('shutdown -c')
     
     if args.distributed:
         logger.info(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
