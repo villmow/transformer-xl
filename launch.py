@@ -37,12 +37,12 @@ parser.add_argument('--conda_env', type=str, default='',
 args = parser.parse_args()
 
 
-# environment settings, should change rarely
+# default environment settings, should change rarely since they affect
+# all configs
 IMAGE_NAME = 'reference03'
 CONDA_ENV = 'pytorch_p36'
 
-# 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to
-# final global batch size
+# 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global batch size
 # local_batch_size: per-GPU batch size
 BASE_LR_BATCHSIZE = 32
 
