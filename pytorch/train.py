@@ -718,7 +718,10 @@ def train():
             log_tb('loss/loss', cur_loss)
             log_tb('loss/ppl', math.exp(cur_loss))
             log_tb('times/step', 1000*elapsed_time/elapsed_steps)
-            log_tb('lr', optimizer.param_groups[0]['lr'])
+            current_lr = optimizer.param_groups[0]['lr']
+            log_tb('lr', current_lr)
+            log_tb('lr_normalized1', current_lr/batch_total.item())
+            log_tb('lr_normalized2', current_lr/total_tokens.item())
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
 
