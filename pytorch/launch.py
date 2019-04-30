@@ -96,7 +96,7 @@ def main(args):
     '--mem_len', 128,
     '--eval_tgt_len', 128,
     '--batch_size', local_batch,  # per-gpu batch size
-    '--eval-interval', 400,
+    '--eval-interval', 4000,
     # '--scheduler', 'finder', # Use max_tokens 2e7 and log-interval 10
   ]
 
