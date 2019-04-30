@@ -676,6 +676,7 @@ def evaluate(eval_iter):
 
     return total_loss / total_len
 
+
 def train():
     global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, \
         log_start_time, train_step, last_log_step, epoch
@@ -738,7 +739,7 @@ def train():
             loss, mems = ret[0], ret[1:]
             loss = loss.float().mean().type_as(loss)
             #print("loss, mems dtype: ",loss.dtype,mems[0].dtype)
-            with timeit('backwards', noop=train_step % args.log_interval != 0):
+            with timeit('backwards', noop=not should_log):
               # todo(y): explain this
               if args.fp16:
                   if args.true_fp16:
@@ -929,12 +930,6 @@ def main():
         logger.info('Exiting from training early')
     except StopIteration:
         pass
-    # finally:
-    #     if is_master:
-    #         logger.info('Saving final checkpoint')
-    #         with open(os.path.join(args.work_dir, 'final_model.pt'), 'wb') as f:
-    #             with timeit('save'):
-    #                 torch.save(model.module if args.distributed else model, f)
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")

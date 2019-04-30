@@ -54,13 +54,22 @@ one_gpu = {
 }
 
 one_machine = {
-    'base_lr': 0.000125*5/3,  # ben-big-lr.09
+    'base_lr': 0.000125*5/3,  # from ben-big-lr.09
     'instance_type': 'p3dn.24xlarge',
     'local_batch': 96,
     'machines': 1,
 }
 
-two_machines = {23
+one_machine_fp16 = {
+    'base_lr': 0.000125*5/3,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch': 96,
+    'machines': 1,
+    'extra_train_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+
+two_machines = {
     'base_lr': 0.000125*5/3,    # yaro-two.07
     'instance_type': 'p3dn.24xlarge',
     'local_batch': 96,
@@ -184,6 +193,10 @@ def main(_unused_args_using_global_args_instead):
 
     training_params.extend(user_params)
     
+
+    if 'extra_train_params' in schedule:
+        training_params.extend(schedule['extra_train_params'])
+
     training_params = ' '.join(str(p) for p in training_params)
     nccl_params = get_nccl_params(args.machines, num_gpus)
 
