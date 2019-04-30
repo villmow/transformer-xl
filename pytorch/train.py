@@ -125,7 +125,6 @@ parser.add_argument('--log-interval', type=int, default=200,
                     help='report interval')
 parser.add_argument('--verbose-log-steps', type=int, default=60,
                     help='do logging at every step for this many steps at the start of training')
-
 parser.add_argument('--eval-interval', type=int, default=4000,
                     help='evaluation interval')
 parser.add_argument('--work_dir', default=None, type=str,
@@ -385,7 +384,7 @@ corpus = get_lm_corpus(args.data, args.dataset)
 ntokens = len(corpus.vocab)
 args.n_token = ntokens
 
-eval_batch_size = 10
+eval_batch_size = args.batch_size * 2
 tr_iter = corpus.get_iterator('train', args.batch_size, args.tgt_len,
     device=device, ext_len=args.ext_len)
 va_iter = corpus.get_iterator('valid', eval_batch_size, args.eval_tgt_len,
@@ -601,7 +600,7 @@ def evaluate(eval_iter):
     total_len, total_loss = 0, 0.
     with torch.no_grad():
         mems = tuple()
-        bar = tqdm.tqdm(eval_iter, leave=False, desc="Eval")
+        bar = tqdm.tqdm(eval_iter.get_dist_iter(global_rank, max_rank), leave=False, desc="Eval")
         for i, (data, target, seq_len) in enumerate(bar):
             if args.max_eval_steps > 0 and i >= args.max_eval_steps:
                 break
@@ -748,8 +747,6 @@ def train():
             log_start_time = time.time()
             last_log_step = train_step
 
-        # TODO(b): refactor this to distribute evaluation across machines instead of doing the same work on all of them
-        # https://github.com/yaroslavvb/imagenet18/blob/282b5f5aeaf7ea7e461b2ffa06895419980b657d/training/train_imagenet_nv.py#L267
         if train_step % args.eval_interval == 0:
             val_loss = evaluate(va_iter)
             if not best_val_loss or val_loss < best_val_loss:
