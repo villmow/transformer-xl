@@ -61,18 +61,14 @@ def main(args):
   
   num_workers = num_gpus * args.machines
   global_batch = local_batch * num_workers
-  #  global_batch = num_gpus * gpu_mem_gb * 2 * args.machines
   print("using global batch ", global_batch)  # 512=8*32*2*1
   lr = base_lr * num_workers
   if '24x' in args.instance_type:
     local_batch = 96  # nonlinear bs scaling
     global_batch = local_batch * num_workers
-    base_lr = base_lr * 1.5  # linear scaling for 64 -> 96 batch size
-    base_lr = base_lr * 5/3   # ben's super-linear scaling factor (absorb into base_lr eventually)
-    print(f"Current base_lr {base_lr}, expected 0.000625")
-    #    lr = .005 * args.machines   # should be 0.003
+    base_lr = base_lr * 5/3   # extra boost (absorb into base_lr eventually)
+    base_lr = base_lr * 1.5   # linear scaling for 64 -> 96 batch size
     lr = base_lr * num_workers
-    print(f"Current lr {lr} expected 0.005")
 
   # todo(y): consistency with - and _ in args
   # Based on run_wt103_base.sh
