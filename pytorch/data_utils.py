@@ -46,12 +46,6 @@ class LMOrderedIterator(object):
         for i in range(start, self.data.size(0) - 1, self.bptt):
             yield self.get_batch(i)
     
-    def get_dist_iter(self, rank, max_rank, start=0):
-        chunk_len = self.data.size(0) // max_rank
-
-        for i in range(start, chunk_len, self.bptt):
-            yield self.get_batch(i + (rank * chunk_len))
-
     def get_varlen_iter(self, start=0, std=5, min_len=5, max_deviation=3):
         max_len = self.bptt + max_deviation * std
         i = start
@@ -231,20 +225,23 @@ class Corpus(object):
             self.test  = self.vocab.encode_file(
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
 
+    def get_dist_iterator(self, split, rank, max_rank, *args, **kwargs):
+        if self.dataset == 'lm1b':
+            raise NotImplementedError('See get_iterator')
+        data = self.__getattribute__(split)
+        chunk_size = data.size(0) // max_rank
+        return LMOrderedIterator(data[rank * chunk_size:(rank+1) * chunk_size], *args, **kwargs)
+
     def get_iterator(self, split, *args, **kwargs):
-        if split == 'train':
-            if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
-                data_iter = LMOrderedIterator(self.train, *args, **kwargs)
-            elif self.dataset == 'lm1b':
+        data = self.__getattribute__(split)
+        if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
+            data_iter = LMOrderedIterator(data, *args, **kwargs)
+        elif self.dataset == 'lm1b':
+            if split in ['valid', 'test']:
+                data_iter = LMShuffledIterator(data, *args, **kwargs)
+            else:
                 kwargs['shuffle'] = True
                 data_iter = LMMultiFileIterator(self.train, self.vocab, *args, **kwargs)
-        elif split in ['valid', 'test']:
-            data = self.valid if split == 'valid' else self.test
-            if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
-                data_iter = LMOrderedIterator(data, *args, **kwargs)
-            elif self.dataset == 'lm1b':
-                data_iter = LMShuffledIterator(data, *args, **kwargs)
-
         return data_iter
 
 
@@ -286,7 +283,7 @@ if __name__ == '__main__':
 
     corpus = get_lm_corpus(args.datadir, args.dataset)
     print('Vocab size : {}'.format(len(corpus.vocab.idx2sym)))
-    tr_iter = corpus.get_iterator('train', 15, 150,
-    'cpu', ext_len=0)
-    x,y,l = next(tr_iter.get_dist_iter(0, 10))
-
+    #tr_iter = corpus.get_iterator('train', 16, 150, 'cpu', ext_len=0)
+    tr_iter = corpus.get_dist_iterator('train', rank=0, max_rank=10, bsz=16, bptt=150, device='cpu', ext_len=0)
+    x,y,l = next(iter(tr_iter))
+    print(x.shape)

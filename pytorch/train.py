@@ -391,12 +391,12 @@ ntokens = len(corpus.vocab)
 args.n_token = ntokens
 
 eval_batch_size = args.batch_size * 2
-tr_iter = corpus.get_iterator('train', args.batch_size, args.tgt_len,
-    device=device, ext_len=args.ext_len)
-va_iter = corpus.get_iterator('valid', eval_batch_size, args.eval_tgt_len,
-    device=device, ext_len=args.ext_len)
-te_iter = corpus.get_iterator('test', eval_batch_size, args.eval_tgt_len,
-    device=device, ext_len=args.ext_len)
+tr_iter, va_iter, te_iter = [
+    corpus.get_dist_iterator(
+        split, global_rank, max_rank, args.batch_size, args.tgt_len,
+        device=device, ext_len=args.ext_len) 
+    for split in ('train', 'valid', 'test')
+]
 
 # adaptive softmax / embedding
 cutoffs, tie_projs = [], [False]
@@ -635,7 +635,7 @@ def evaluate(eval_iter):
     total_len, total_loss = 0, 0.
     with torch.no_grad():
         mems = tuple()
-        bar = tqdm.tqdm(eval_iter.get_dist_iter(global_rank, max_rank), leave=False, desc="Eval")
+        bar = tqdm.tqdm(eval_iter, leave=False, desc="Eval")
         for i, (data, target, seq_len) in enumerate(bar):
             if args.max_eval_steps > 0 and i >= args.max_eval_steps:
                 break
@@ -671,9 +671,7 @@ def train():
         mems = [tuple() for _ in range(args.batch_chunk)]
     else:
         mems = tuple()
-    # TODO(b): fix varlen iter
-    #train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
-    train_iter = tr_iter.get_dist_iter(global_rank, max_rank)
+    train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(train_iter):	
         # TODO(y): batch is dimension 1, why?
@@ -854,7 +852,7 @@ def main():
     if args.distributed:
         logger.info(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
 
-        logger.info('addr', os.environ['MASTER_ADDR'], 'port', os.environ['MASTER_PORT'])
+        logger.info('addr %s port %s', os.environ['MASTER_ADDR'], os.environ['MASTER_PORT'])
         
         dist.init_process_group(backend=args.dist_backend,
                                 init_method=args.dist_url,
