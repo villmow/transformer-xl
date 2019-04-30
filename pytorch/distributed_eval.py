@@ -13,9 +13,7 @@
 # bash run_wt103_base.sh train --work_dir ~/workdir
 import argparse
 import datetime
-import itertools
 import logging
-import math
 import os
 import sys
 import time
@@ -28,14 +26,12 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
-import tqdm
-from tensorboardX import SummaryWriter
+from pytorch_lamb import Lamb
 from torch.nn.parallel import DistributedDataParallel
 
 from data_utils import get_lm_corpus
-from mem_transformer import MemTransformerLM
 from lr_finder import LRFinder
-from pytorch_lamb import Lamb, log_lamb_rs
+from mem_transformer import MemTransformerLM
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
@@ -189,14 +185,43 @@ parser.add_argument('--auto-shutdown-success-delay-mins', default=10, type=int,
 parser.add_argument('--auto-shutdown-failure-delay-mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
 
+parser.add_argument('--checkpoint', '/ncluster/runs.new/yaro-one.05/model-1.pt')
+
+
+parser.add_argument('--role', type=str, default='worker',
+                    help='internal flag, launcher or worker')
+
 args = parser.parse_args()
 args.tied = not args.not_tied
 
+
+class DDP(DistributedDataParallel):
+
+    def __init__(self, module, *args, **kwargs):
+        super(DistributedDataParallel, self, *args, **kwargs).__init__()
+        self.module = module
+
+        for p in self.module.parameters():
+            if torch.is_tensor(p):
+                dist.broadcast(p, 0)
+
+    def forward(self, *args, **kwargs):
+        # DDP has a sync point on forward. No need to do this for eval. This allows us to have different batch sizes
+        if self.training: return super().forward(*args, **kwargs)
+        else:             return self.module(*args, **kwargs)
+
+    def load_state_dict(self, *args, **kwargs):
+        self.module.load_state_dict(*args, **kwargs)
+
+    def state_dict(self, *args, **kwargs):
+        return self.module.state_dict(*args, **kwargs)
+    
 
 def env_world_size(): return int(os.environ.get('WORLD_SIZE', 1))
 
 
 def env_rank(): return int(os.environ.get('RANK', 0))
+
 
 
 def sum_tensor(tensor):
@@ -226,23 +251,6 @@ def save_checkpoint(model_1, optimizer_1, suffix=''):
             torch.save(model_1, f_1)
         with open(args.work_dir+f'/optimizer-{suffix}.pt', 'wb') as f_1:
             torch.save(optimizer_1.state_dict(), f_1)
-
-
-# global variables
-global_timeit_dict = OrderedDict()
-global_example_count = 0
-global_token_count = 0
-event_writer = NoOp()
-logdir = None
-epoch = 0
-train_step = 0
-
-# TODO(y): replace print's with log.console
-
-local_rank = args.local_rank
-global_rank = env_rank()
-max_rank = env_world_size()
-torch.cuda.set_device(args.local_rank)
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -425,169 +433,6 @@ if args.adaptive:
         cutoffs = [60000, 100000, 640000]
         tie_projs += [False] * len(cutoffs)
 
-###############################################################################
-# Build the model
-###############################################################################
-def init_weight(weight):
-    if args.init == 'uniform':
-        nn.init.uniform_(weight, -args.init_range, args.init_range)
-    elif args.init == 'normal':
-        nn.init.normal_(weight, 0.0, args.init_std)
-
-def init_bias(bias):
-    nn.init.constant_(bias, 0.0)
-
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Linear') != -1:
-        if hasattr(m, 'weight') and m.weight is not None:
-            init_weight(m.weight)
-        if hasattr(m, 'bias') and m.bias is not None:
-            init_bias(m.bias)
-    elif classname.find('AdaptiveEmbedding') != -1:
-        if hasattr(m, 'emb_projs'):
-            for i in range(len(m.emb_projs)):
-                if m.emb_projs[i] is not None:
-                    nn.init.normal_(m.emb_projs[i], 0.0, args.proj_init_std)
-    elif classname.find('Embedding') != -1:
-        if hasattr(m, 'weight'):
-            init_weight(m.weight)
-    elif classname.find('ProjectedAdaptiveLogSoftmax') != -1:
-        if hasattr(m, 'cluster_weight') and m.cluster_weight is not None:
-            init_weight(m.cluster_weight)
-        if hasattr(m, 'cluster_bias') and m.cluster_bias is not None:
-            init_bias(m.cluster_bias)
-        if hasattr(m, 'out_projs'):
-            for i in range(len(m.out_projs)):
-                if m.out_projs[i] is not None:
-                    nn.init.normal_(m.out_projs[i], 0.0, args.proj_init_std)
-    elif classname.find('LayerNorm') != -1:
-        if hasattr(m, 'weight'):
-            nn.init.normal_(m.weight, 1.0, args.init_std)
-        if hasattr(m, 'bias') and m.bias is not None:
-            init_bias(m.bias)
-    elif classname.find('TransformerLM') != -1:
-        if hasattr(m, 'r_emb'):
-            init_weight(m.r_emb)
-        if hasattr(m, 'r_w_bias'):
-            init_weight(m.r_w_bias)
-        if hasattr(m, 'r_r_bias'):
-            init_weight(m.r_r_bias)
-        if hasattr(m, 'r_bias'):
-            init_bias(m.r_bias)
-
-def update_dropout(m):
-    classname = m.__class__.__name__
-    if classname.find('Dropout') != -1:
-        if hasattr(m, 'p'):
-            m.p = args.dropout
-
-def update_dropatt(m):
-    if hasattr(m, 'dropatt'):
-        m.dropatt.p = args.dropatt
-
-if args.restart:
-    with open(os.path.join(args.restart_dir, 'model.pt'), 'rb') as f:
-        model = torch.load(f)
-    if not args.fp16:
-        model = model.float()
-    model.apply(update_dropout)
-    model.apply(update_dropatt)
-else:
-    model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
-        args.d_head, args.d_inner, args.dropout, args.dropatt,
-        tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-        tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-        ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
-        same_length=args.same_length, attn_type=args.attn_type,
-        clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
-    model.apply(weights_init)
-    model.word_emb.apply(weights_init) # ensure embedding init is not overridden by out_layer in case of weight sharing
-args.n_all_param = sum([p.nelement() for p in model.parameters()])
-args.n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
-
-if args.fp16:
-    model = model.half()
-model = model.to(device)
-
-#### optimizer
-optimizer_sparse = None
-if args.optim.lower() == 'sgd':
-    if args.sample_softmax > 0:
-        dense_params, sparse_params = [], []
-        for param in model.parameters():
-            if param.size() == model.word_emb.weight.size():
-                sparse_params.append(param)
-            else:
-                dense_params.append(param)
-        optimizer_sparse = optim.SGD(sparse_params, lr=args.lr * 2)
-        optimizer = optim.SGD(dense_params, lr=args.lr, momentum=args.mom)
-    else:
-        optimizer = optim.SGD(model.parameters(), lr=args.lr,
-            momentum=args.mom)
-elif args.optim.lower() == 'lamb':
-    optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
-else:
-    assert args.optim.lower() == 'adam'
-    if args.sample_softmax > 0:
-        dense_params, sparse_params = [], []
-        for param in model.parameters():
-            if param.size() == model.word_emb.weight.size():
-                sparse_params.append(param)
-            else:
-                dense_params.append(param)
-        optimizer_sparse = optim.SparseAdam(sparse_params, lr=args.lr)
-        optimizer = optim.Adam(dense_params, lr=args.lr, weight_decay=args.wd)
-    else:
-        # TODO(b): try , betas=(0.9, 0.99))
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-
-#### scheduler
-if args.scheduler == 'cosine':
-    # here we do not set eta_min to lr_min to be backward compatible
-    # because in previous versions eta_min is default to 0
-    # rather than the default value of lr_min 1e-6
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer,
-        args.max_tokens, eta_min=args.eta_min) # should use eta_min arg
-    if args.sample_softmax > 0:
-        scheduler_sparse = optim.lr_scheduler.CosineAnnealingLR(optimizer_sparse,
-            args.max_tokens, eta_min=args.eta_min) # should use eta_min arg
-elif args.scheduler == 'finder':
-    scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr/1e3)
-elif args.scheduler == 'inv_sqrt':
-    # originally used for Transformer (in Attention is all you need)
-    def lr_lambda(step):
-        # return a multiplier instead of a learning rate
-        if step == 0 and args.warmup_tokens == 0:
-            return 1.
-        else:
-            return 1. / (step ** 0.5) if step > args.warmup_tokens \
-                   else step / (args.warmup_tokens ** 1.5)
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-elif args.scheduler == 'dev_perf':
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-        factor=args.decay_rate, patience=args.patience, min_lr=args.lr_min)
-    if args.sample_softmax > 0:
-        scheduler_sparse = optim.lr_scheduler.ReduceLROnPlateau(optimizer_sparse,
-            factor=args.decay_rate, patience=args.patience, min_lr=args.lr_min)
-elif args.scheduler == 'constant':
-    pass
-
-# if args.cuda and args.fp16:
-#     # If args.dynamic_loss_scale is False, static_loss_scale will be used.
-#     # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
-#     optimizer = FP16_Optimizer(optimizer,
-#                                static_loss_scale = args.static_loss_scale,
-#                                dynamic_loss_scale = args.dynamic_loss_scale,
-#                                dynamic_loss_args = {'init_scale': 2 ** 16})
-
-if args.restart:
-    if os.path.exists(os.path.join(args.restart_dir, 'optimizer.pt')):
-        with open(os.path.join(args.restart_dir, 'optimizer.pt'), 'rb') as f:
-            opt_state_dict = torch.load(f)
-            optimizer.load_state_dict(opt_state_dict)
-    else:
-        print('Optimizer was not saved. Start from scratch.')
 
 # todo(y): move into main()
 logger.info("Torch version: {}".format(torch.__version__))
@@ -601,66 +446,26 @@ logger.info('#non emb params = {}'.format(args.n_nonemb_param))
 #print(model)
 
 
-###############################################################################
-# Training code
-###############################################################################
+def worker():
+   print(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
 
-def evaluate(eval_iter):
-    # Turn on evaluation mode which disables dropout.
-    model.eval()
+    dist.init_process_group(backend=args.dist_backend,
+                            init_method=args.dist_url,
+                            world_size=env_world_size())
+    assert(env_world_size() == dist.get_world_size())
+    print("Distributed: success (%d/%d)"%(args.local_rank, dist.get_world_size()))
 
-    # If the model does not use memory at all, make the ext_len longer.
-    # Otherwise, make the mem_len longer and keep the ext_len the same.
-    if args.mem_len == 0:
-        model.module.reset_length(args.eval_tgt_len,
-            args.ext_len+args.tgt_len-args.eval_tgt_len, args.mem_len)
-    else:
-        model.module.reset_length(args.eval_tgt_len,
-            args.ext_len, args.mem_len+args.tgt_len-args.eval_tgt_len)
+    if is_master:
+      model = torch.load(f)
+      model.eval()
 
-    # Evaluation
-    total_len, total_loss = 0, 0.
-    with torch.no_grad():
-        mems = tuple()
-        bar = tqdm.tqdm(eval_iter, leave=False, desc="Eval")
-        for i, (data, target, seq_len) in enumerate(bar):
-            if args.max_eval_steps > 0 and i >= args.max_eval_steps:
-                break
-            ret = model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
-            loss = loss.mean()
-            bar.set_description(f'Eval loss {loss:.2f}')
-            total_loss += seq_len * loss.float().item()
-            total_len += seq_len
+    model = DDP(model, device_ids=[args.local_rank],
+                output_device=args.local_rank)
 
-    # Switch back to the training mode
-    model.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
-    model.train()
-
-    return total_loss / total_len
-
-def train():
-    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, \
-        log_start_time, train_step, last_log_step, epoch
-    # Turn on training mode which enables dropout.
-    model.train()
-
-    log_tb('sizes/batch_size', args.batch_size)
-    log_tb('sizes/seq_size', args.tgt_len)
-
-    log_tb('sizes/params', args.n_all_param)
-    log_tb('sizes/non_emb_params', args.n_nonemb_param)
-
-    # TODO(y): get rid of this (who chunks batches anyway?)
-    if args.batch_chunk > 1:
-        mems = [tuple() for _ in range(args.batch_chunk)]
-    else:
-        mems = tuple()
-    # TODO(b): fix varlen iter
-    #train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
     train_iter = tr_iter.get_dist_iter(global_rank, max_rank)
 
-    log_start_time = time.time()
+    total_loss = 0
+    total_examples = 0
     for batch, (data, target, seq_len) in enumerate(train_iter):	
         # TODO(y): batch is dimension 1, why?
         assert seq_len == data.shape[0]
@@ -670,259 +475,67 @@ def train():
         batch_total = sum_tensor(batch_total)      # global batch size
         total_tokens = batch_total.item()*seq_len
 
-        should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
+        ret = model(data, target, *mems)
+        loss, mems = ret[0], ret[1:]
+        global_loss = dist.all_reduce(loss, op=dist.reduce_op.SUM)
 
-        global_token_count += total_tokens
-        model.zero_grad()
-        if args.batch_chunk > 1:
-            data_chunks = torch.chunk(data, args.batch_chunk, 1)
-            target_chunks = torch.chunk(target, args.batch_chunk, 1)
-            for i in range(args.batch_chunk):
-                data_i = data_chunks[i].contiguous()
-                target_i = target_chunks[i].contiguous()
-                with timeit('model', noop=not should_log):
-                    ret = model(data_i, target_i, *mems[i])
-                loss, mems[i] = ret[0], ret[1:]
-                loss = loss.float().mean().type_as(loss) / args.batch_chunk
-                if args.fp16:
-                    optimizer.backward(loss)
-                else:
-                    loss.backward()
-                train_loss += loss.float().item()
-        else:
-            ret = model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
-            loss = loss.float().mean().type_as(loss)
-            with timeit('backwards', noop=train_step % args.log_interval != 0):
-              if args.fp16:
-                  optimizer.backward(loss)
-              else:
-                  loss.backward()
-            train_loss += loss.float().item()
+        total_loss += global_loss.item()
+        total_examples += batch_total.item()
+        if total_examples % 1000 == 0 and args.local_rank == 0:
+            print(total_loss / total_examples)
 
-        if args.fp16:
-            optimizer.clip_master_grads(args.clip)
-        else:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+    print('=' * 100)
 
-        optimizer.step()
-        if args.sample_softmax > 0:
-            optimizer_sparse.step()
+    if args.local_rank == 0:
+        print("Final loss", total_loss / total_examples)
 
-        # step-wise learning rate annealing
-        train_step += 1  # global train step
-        if args.scheduler in ['cosine', 'constant', 'dev_perf']:
-            # linear warmup stage
-            if global_token_count < args.warmup_tokens:
-                curr_lr = args.lr * global_token_count / args.warmup_tokens
-                optimizer.param_groups[0]['lr'] = curr_lr
-                if args.sample_softmax > 0:
-                    optimizer_sparse.param_groups[0]['lr'] = curr_lr * 2
-            else:
-                if args.scheduler == 'cosine':
-                    scheduler.step(global_token_count)
-                    if args.sample_softmax > 0:
-                        scheduler_sparse.step(global_token_count)
-        else:
-            scheduler.step(global_token_count)
-            
-        if should_log:
-            elapsed_time = time.time() - log_start_time
-            elapsed_steps = train_step - last_log_step
-            
-            # compute average loss over last logging interval
-            cur_loss = train_loss / elapsed_steps
-            log_str = '| epoch {:3d} step {:>8d} | {:>6d} batches | lr {:.3g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(epoch, train_step, batch+1,
-                                                                 optimizer.param_groups[0]['lr'],
-                                                                 elapsed_time * 1000 / elapsed_steps, cur_loss)
-            if args.dataset in ['enwik8', 'text8']:
-                log_str += ' | bpc {:9.5f}'.format(cur_loss / math.log(2))
-            else:
-                log_str += ' | ppl {:9.3f}'.format(math.exp(cur_loss))
-            logger.info(log_str)
-            log_tb('loss/epoch', epoch)
-            log_tb('loss/loss', cur_loss)
-            log_tb('loss/ppl', math.exp(cur_loss))
-            log_tb('times/step', 1000*elapsed_time/elapsed_steps)
-            current_lr = optimizer.param_groups[0]['lr']
-            log_tb('lr', current_lr)
-            log_tb('lr_normalized1', current_lr/toscalar(batch_total))
-            log_tb('lr_normalized2', current_lr/toscalar(total_tokens))
-            if args.optim == 'lamb':
-                log_lamb_rs(optimizer, event_writer, global_token_count)
+def launcher():
+  
+  training_params = default_params + training_params
 
-            time_per_batch = elapsed_time / elapsed_steps
-            time_per_sample = time_per_batch / args.batch_size
-            time_per_token = time_per_sample / args.tgt_len
-            
-            log_tb('times/batches_per_sec', 1 / time_per_batch)
-            log_tb('times/samples_per_sec', 1 / time_per_sample)
-            log_tb('times/tokens_per_sec', 1 / time_per_token)
+    # pass through command-line launcher arguments to the worker
+    user_params = ['--checkpoint-each-epoch', args.checkpoint_each_epoch]
 
-            if str(device) == 'cuda':
-                log_tb("memory/allocated_gb", torch.cuda.memory_allocated() / 1e9)
-                log_tb("memory/max_allocated_gb", torch.cuda.max_memory_allocated() / 1e9)
-                log_tb("memory/cached_gb", torch.cuda.memory_cached() / 1e9)
-                log_tb("memory/max_cached_gb", torch.cuda.max_memory_cached() / 1e9)
+    training_params.extend(user_params)
+    
+    training_params = ' '.join(str(p) for p in training_params)
+    nccl_params = get_nccl_params(args.machines, num_gpus)
 
-            # todo(y): refactor to init loss at the top
-            train_loss = 0
-            log_start_time = time.time()
-            last_log_step = train_step
+    for i, task in enumerate(job.tasks):
+        dist_params = \
+            f'--nproc_per_node={num_gpus} ' \
+            f'--nnodes={args.machines} --node_rank={i} ' \
+            f'--master_addr={job.tasks[0].ip} --master_port={6016}'
+        cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} train.py {training_params}'
+        task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
+        task.run(cmd, non_blocking=True)
 
-        # TODO(b): refactor this to distribute evaluation across machines instead of doing the same work on all of them
-        # https://github.com/yaroslavvb/imagenet18/blob/282b5f5aeaf7ea7e461b2ffa06895419980b657d/training/train_imagenet_nv.py#L267
-        if train_step % args.eval_interval == 0:
-            val_loss = evaluate(va_iter)
-            if not best_val_loss or val_loss < best_val_loss:
-                if not args.debug and is_master:
-                    logger.info('Saving checkpoint for new best loss')
-                    save_checkpoint(model.module if args.distributed else model,
-                                    optimizer, suffix='best')
-                    
-                best_val_loss = val_loss
-
-            logger.info('-' * 100)
-            log_str = '| Eval {:3d} at step {:>8d} | time: {:5.2f}s ' \
-                      '| valid loss {:5.2f}'.format(
-                train_step // args.eval_interval, train_step,
-                (time.time() - eval_start_time), val_loss)
-            if args.dataset in ['enwik8', 'text8']:
-                log_str += ' | bpc {:9.5f}'.format(val_loss / math.log(2))
-            else:
-                log_str += ' | valid ppl {:9.3f}'.format(math.exp(val_loss))
-            logger.info(log_str)
-            logger.info('-' * 100)
-            log_tb('loss/val_loss', val_loss)
-            log_tb('loss/val_ppl', math.exp(val_loss))
-
-            eval_start_time = time.time()
-
-        # TODO: instead of stopping training, transition to constant small LR forever
-        if global_token_count >= args.max_tokens:
-            logger.info('-' * 100)
-            logger.info('End of training')
-            raise StopIteration()
-
-    if args.checkpoint_each_epoch:
-        logger.info(f'Saving checkpoint for epoch {epoch}')
-        save_checkpoint(model.module if args.distributed else model,
-                        optimizer, suffix=f'{epoch}')
-
-
+    print(f"Logging to {job.logdir}")
 
 
 def main():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, best_val_loss, eval_start_time, log_start_time, epoch, model
+    if args.role == "launcher":
+        launcher()
+    elif args.role == "worker":
 
-    if args.local_rank > 0:
-        pass   # skip shutdown when rank is explicitly set + not zero rank
-    else:
-        os.system('shutdown -c')
-    
-    if args.distributed:
-        logger.info(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
+        torch.cuda.set_device(args.local_rank)
 
-        dist.init_process_group(backend=args.dist_backend,
-                                init_method=args.dist_url,
-                                world_size=env_world_size())
-        assert(env_world_size() == dist.get_world_size())
-        logger.info("Distributed: success (%d/%d)"%(args.local_rank, dist.get_world_size()))
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
 
-        model = DistributedDataParallel(model,
-                                        device_ids=[args.local_rank],
-                                        output_device=args.local_rank)
+        log = util.FileLogger(args.logdir + f'/worker-{util.get_global_rank()}', mirror=(args.local_rank == 0))
 
-
-    # global global_example_count, global_token_count, event_writer, logdir
-    #    logdir = f'{args.logdir_root}/{args.run_name}-{current_timestamp()}'
-    logdir = args.logdir
-    assert os.path.exists(logdir)
-    #    os.system(f'mkdir -p {logdir}')
-
-    if is_master and not args.debug:
-        event_writer = SummaryWriter(logdir)
-
-    log_tb("first", time.time())
-    event_writer.add_text('args', str(args))
-
-    # test checkpoint writing
-    if args.checkpoint_each_epoch:
-        logger.info(f'Saving checkpoint for epoch {epoch}')
-        save_checkpoint(model.module if args.distributed else model,
-                        optimizer, suffix=f'{epoch}')
-
-
-    # Loop over epochs.
-    train_step = 0
-    train_loss = 0
-    last_log_step = 0
-    best_val_loss = None
-
-    log_start_time = time.time()
-    eval_start_time = time.time()
-
-    # At any point you can hit Ctrl + C to break out of training early.
-    try:
-        for epoch in itertools.count(start=1):
-            train()
-    except KeyboardInterrupt:
-        logger.info('-' * 100)
-        logger.info('Exiting from training early')
-    except StopIteration:
-        pass
-    # finally:
-    #     if is_master:
-    #         logger.info('Saving final checkpoint')
-    #         with open(os.path.join(args.work_dir, 'final_model.pt'), 'wb') as f:
-    #             with timeit('save'):
-    #                 torch.save(model.module if args.distributed else model, f)
-
-
-    # Load the best saved model.
-    logger.info("Loading best checkpoint")
-    model_file = os.path.join(args.work_dir, 'model.pt')
-    if os.path.exists(model_file):
-        with open(model_file, 'rb') as f:
-            with timeit('load'):
-                model = torch.load(f, map_location = lambda storage,
-                                loc: storage.cuda(args.local_rank))
-                model = DistributedDataParallel(
-                    model,
-                    device_ids=[args.local_rank],
-                    output_device=args.local_rank)
-    else:
-        logger.warn('no model file, using current model for loss')
-
-    # Run on test data.
-    test_loss = evaluate(te_iter)
-    logger.info('=' * 100)
-    if args.dataset in ['enwik8', 'text8']:
-        logger.info('| End of training | test loss {:5.2f} | test bpc {:9.5f}'.format(
-            test_loss, test_loss / math.log(2)))
-    else:
-        logger.info('| End of training | test loss {:5.2f} | test ppl {:9.3f}'.format(
-            test_loss, math.exp(test_loss)))
-    log_tb('loss/test_loss', test_loss)
-    log_tb('loss/test_ppl', math.exp(test_loss))
-
-    logger.info('=' * 100)
-
+        torch.cuda.set_device(args.local_rank)
+        #      test_p2p()
+        if args.method == 'optimize':
+            test_optimize()
+        elif args.method == 'allreduce':
+            test_allreduce()
+        else:
+            assert False, 'unknown arg'
 
 if __name__ == '__main__':
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=UserWarning)
-            main()
-        if not args.skip_auto_shutdown and is_master:
-            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stdout)
-        # Logger automatically picks up exc info from context.
-        logger.exception('Failed')
-        # in case of exception, wait 2 hours before shutting down
-        if not args.skip_auto_shutdown:
-            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_failure_delay_mins}')
-    # todo(y): close/flush all the loggers
+  main()
+
