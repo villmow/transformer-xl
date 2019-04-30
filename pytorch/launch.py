@@ -77,7 +77,7 @@ def main(_unused_args_using_global_args_instead):
     num_gpus = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpus']
     # gpu_mem_gb = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpu_mem_gb']
 
-    local_batch = 64
+    local_batch = 32
     #    base_lr = 0.00025  # reference lr for 1 worker, batch size 64
     base_lr = lr_schedules[args.machines]['base_lr']
 
