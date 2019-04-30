@@ -42,10 +42,10 @@ def get_nccl_params(_num_tasks, _num_gpus):
     return params
 
 
-# reference schedule for 1 GPU, batch size 64 run
-lr_schedules = {1: {'base_lr':  0.00025*5/3},  # ben-big-lr.09
-                2: {'base_lr': 0.00025*5/3},    # yaro-two.07
-                8: {'base_lr': 0.00025}}
+# reference schedule for 1 GPU, batch size 32 run
+lr_schedules = {1: {'base_lr': 0.000125*5/3},  # ben-big-lr.09
+                2: {'base_lr': 0.000125*5/3},    # yaro-two.07
+                8: {'base_lr': 0.000125}}
 
 
 def main(_unused_args_using_global_args_instead):
@@ -88,7 +88,7 @@ def main(_unused_args_using_global_args_instead):
     if '24x' in args.instance_type:  # special config for increased batch size
         local_batch = 96  # nonlinear bs scaling
         _global_batch = local_batch * num_workers
-        base_lr = base_lr * 1.5  # linear scaling for 64 -> 96 batch size
+        base_lr = base_lr * 3  # linear scaling for 32 -> 96 batch size
         
     lr = base_lr * num_workers
 
