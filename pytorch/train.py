@@ -7,8 +7,7 @@
 # python train.py --log-interval=1 --eval-interval=5 --max_tokens=500 --batch_size=1 --work_dir=/tmp/checkpoints --dataset=wt2 --data=../data/wikitext-2 --n_layer=1 --n_head=1 --d_head=1 --d_model=2 --d_inner=2  --dataset wt2 --max_eval_steps 1 --data=/ncluster/data/wikitext-2 --lr 0.025
 #
 # Tensorboard results go to /ncluster/runs
-#
-# To run remotely:
+# # To run remotely:
 # cp -R /ncluster/data/transformer-xl-data ../data
 # bash run_wt103_base.sh train --work_dir ~/workdir
 import argparse
@@ -21,6 +20,8 @@ import sys
 import time
 import warnings
 from collections import OrderedDict
+
+from fp16_opt import FP16_Module, FP16_Optimizer
 
 import numpy as np
 import pytz
@@ -157,14 +158,23 @@ parser.add_argument('--finetune_v2', action='store_true',
                     help='finetune v2')
 parser.add_argument('--finetune_v3', action='store_true',
                     help='finetune v3')
+parser.add_argument('--num_gpu', type=int, default=1,
+                    help="number of gpus (used to make sure # tokens is correct)")
+
+parser.add_argument('--true_fp16', action='store_true', default=False,
+                    help="Use true_fp16 as opposed to mixed precision")
 parser.add_argument('--fp16', action='store_true',
                     help='Run in pseudo-fp16 mode (fp16 storage fp32 math).')
-parser.add_argument('--static-loss-scale', type=float, default=1,
+parser.add_argument('--static_loss_scale', type=float, default=1,
                     help='Static loss scale, positive power of 2 values can '
                     'improve fp16 convergence.')
-parser.add_argument('--dynamic-loss-scale', action='store_true',
+parser.add_argument('--dynamic_loss_scale', action='store_true',
                     help='Use dynamic loss scaling.  If supplied, this argument'
                     ' supersedes --static-loss-scale.')
+parser.add_argument('--fp32_embedding', action='store_true',
+                    help="use fp32 embeddings UNIMPLEMENTED")
+parser.add_argument('--fp32_layernorm',action='store_true',
+                    help='use fp32 layernorm UNIMPLEMENTED')
 
 # distributed training flags
 parser.add_argument('--distributed', action='store_true', help='Run distributed training. Default True')
@@ -239,7 +249,7 @@ if global_rank == 0:
             sys.__excepthook__(type, value, tb)
         else:
             import traceback, pdb
-            # we are NOT in interactive mode, print the exception...
+           # we are NOT in interactive mode, print the exception...
             traceback.print_exception(type, value, tb)
             print()
             # ...then start the debugger in post-mortem mode.
@@ -365,19 +375,15 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(args.seed)
 
 # Validate `--fp16` option
-# if args.fp16:
-#     if not args.cuda:
-#         print('WARNING: --fp16 requires --cuda, ignoring --fp16 option')
-#         args.fp16 = False
-#     else:
-#         try:
-#             from apex.fp16_utils import FP16_Optimizer
-#         except:
-#             print('WARNING: apex not installed, ignoring --fp16 option')
-#             args.fp16 = False
+#if args.fp16 and not args.true_fp16:
+#    try:
+#        from fp16_opt import FP16_Optimizer
+#    except:
+#        print('WARNING: apex not installed, ignoring --fp16 option')
+#        args.fp16 = False
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+#device = 'cpu'
 ###############################################################################
 # Load data
 ###############################################################################
@@ -396,7 +402,7 @@ te_iter = corpus.get_iterator('test', eval_batch_size, args.eval_tgt_len,
 # adaptive softmax / embedding
 cutoffs, tie_projs = [], [False]
 if args.adaptive:
-    assert args.dataset in ['wt103', 'lm1b']
+    assert args.dataset in ['wt103', 'lm1b','wt2']
     if args.dataset == 'wt103' or args.dataset == 'wt2':
         cutoffs = [20000, 40000, 200000]
         tie_projs += [True] * len(cutoffs)
@@ -485,8 +491,25 @@ else:
 args.n_all_param = sum([p.nelement() for p in model.parameters()])
 args.n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
 
-if args.fp16:
+
+if args.fp16 and not args.true_fp16:
+    #model = model.half()
+    #for p in model.parameters():
+    #    p.data.fill_(0)
+
+    model = FP16_Module(model)
+
+    if args.fp32_embedding:
+        model.module.word_emb.float()
+        model.module.pos_emb.float()
+    if args.fp32_layernorm:
+        for name, _module in model.named_modules():
+            if 'layer_norm' in name:
+                _module.float()
+elif args.fp16 and args.true_fp16:
     model = model.half()
+
+
 model = model.to(device)
 
 #### optimizer
@@ -552,13 +575,15 @@ elif args.scheduler == 'dev_perf':
 elif args.scheduler == 'constant':
     pass
 
-# if args.cuda and args.fp16:
-#     # If args.dynamic_loss_scale is False, static_loss_scale will be used.
-#     # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
-#     optimizer = FP16_Optimizer(optimizer,
-#                                static_loss_scale = args.static_loss_scale,
-#                                dynamic_loss_scale = args.dynamic_loss_scale,
-#                                dynamic_loss_args = {'init_scale': 2 ** 16})
+if args.fp16 and not args.true_fp16:
+      # If args.dynamic_loss_scale is False, static_loss_scale will be used.
+      # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
+   optimizer = FP16_Optimizer(optimizer,
+                              static_loss_scale = args.static_loss_scale,
+                              dynamic_loss_scale = args.dynamic_loss_scale,
+                              dynamic_loss_args = {'init_scale': 2 ** 16},
+                              verbose=True)
+
 
 if args.restart:
     if os.path.exists(os.path.join(args.restart_dir, 'optimizer.pt')):
@@ -590,12 +615,22 @@ def evaluate(eval_iter):
 
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
-    if args.mem_len == 0:
-        model.module.reset_length(args.eval_tgt_len,
-            args.ext_len+args.tgt_len-args.eval_tgt_len, args.mem_len)
+
+    if args.fp16 and not args.true_fp16:
+        if args.mem_len == 0:
+            #Have to unwrap twice: DDP & FP16
+            model.module.module.reset_length(args.eval_tgt_len,
+                args.ext_len+args.tgt_len-args.eval_tgt_len, args.mem_len)
+        else:
+            model.module.module.reset_length(args.eval_tgt_len,
+                args.ext_len, args.mem_len+args.tgt_len-args.eval_tgt_len)
     else:
-        model.module.reset_length(args.eval_tgt_len,
-            args.ext_len, args.mem_len+args.tgt_len-args.eval_tgt_len)
+        if args.mem_len == 0:
+            model.module.reset_length(args.eval_tgt_len,
+                args.ext_len+args.tgt_len-args.eval_tgt_len, args.mem_len)
+        else:
+            model.module.reset_length(args.eval_tgt_len,
+                args.ext_len, args.mem_len+args.tgt_len-args.eval_tgt_len)
 
     # Evaluation
     total_len, total_loss = 0, 0.
@@ -613,7 +648,10 @@ def evaluate(eval_iter):
             total_len += seq_len
 
     # Switch back to the training mode
-    model.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
+    if args.fp16 and not args.true_fp16:
+        model.module.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
+    else:
+        model.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
     model.train()
 
     return total_loss / total_len
@@ -637,20 +675,23 @@ def train():
     # TODO(b): fix varlen iter
     #train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
     train_iter = tr_iter.get_dist_iter(global_rank, max_rank)
-
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(train_iter):	
         # TODO(y): batch is dimension 1, why?
+
         assert seq_len == data.shape[0]
+        for i in range(1,data.shape[0]):
+            assert torch.all(torch.eq(data[i] ,target[i-1])) 
 
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)       # needed for NCCL sync
         batch_total = sum_tensor(batch_total)      # global batch size
+        
         total_tokens = batch_total.item()*seq_len
-
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
         global_token_count += total_tokens
         model.zero_grad()
+        p = next(model.parameters())
         if args.batch_chunk > 1:
             data_chunks = torch.chunk(data, args.batch_chunk, 1)
             target_chunks = torch.chunk(target, args.batch_chunk, 1)
@@ -662,22 +703,36 @@ def train():
                 loss, mems[i] = ret[0], ret[1:]
                 loss = loss.float().mean().type_as(loss) / args.batch_chunk
                 if args.fp16:
-                    optimizer.backward(loss)
+                    if args.true_fp16:
+                        (loss*args.static_loss_scale).backward()
+                    else:
+                        optimizer.backward(loss)
                 else:
                     loss.backward()
                 train_loss += loss.float().item()
         else:
             ret = model(data, target, *mems)
+            #print(len(data),len(ret))
+            #print(data[0].dtype, ret[0].dtype)
             loss, mems = ret[0], ret[1:]
             loss = loss.float().mean().type_as(loss)
+            #print("loss, mems dtype: ",loss.dtype,mems[0].dtype)
             with timeit('backwards', noop=train_step % args.log_interval != 0):
               if args.fp16:
-                  optimizer.backward(loss)
+                  if args.true_fp16:
+                    #print(loss * args.static_loss_scale)
+                    #print(loss*args.static_loss_scale)
+                    loss = loss * args.static_loss_scale
+                    loss.backward()
+                    #print(next(model.parameters()).shape)
+                    #print(p.grad[0,:10])
+                  else:
+                    optimizer.backward(loss)
               else:
                   loss.backward()
             train_loss += loss.float().item()
 
-        if args.fp16:
+        if args.fp16 and not args.true_fp16:
             optimizer.clip_master_grads(args.clip)
         else:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -687,22 +742,27 @@ def train():
             optimizer_sparse.step()
 
         # step-wise learning rate annealing
-        train_step += 1  # global train step
-        if args.scheduler in ['cosine', 'constant', 'dev_perf']:
-            # linear warmup stage
-            if global_token_count < args.warmup_tokens:
-                curr_lr = args.lr * global_token_count / args.warmup_tokens
-                optimizer.param_groups[0]['lr'] = curr_lr
-                if args.sample_softmax > 0:
-                    optimizer_sparse.param_groups[0]['lr'] = curr_lr * 2
-            else:
-                if args.scheduler == 'cosine':
-                    scheduler.step(global_token_count)
+        train_step += 1
+
+        if not args.true_fp16 and not (args.fp16 and optimizer.overflow):
+            if args.scheduler in ['cosine', 'constant', 'dev_perf']:
+                # linear warmup stage
+                if global_token_count < args.warmup_tokens:
+                    curr_lr = args.lr * global_token_count / args.warmup_tokens
+                    optimizer.param_groups[0]['lr'] = curr_lr
                     if args.sample_softmax > 0:
-                        scheduler_sparse.step(global_token_count)
+                        optimizer_sparse.param_groups[0]['lr'] = curr_lr * 2
+                else:
+                    if args.scheduler == 'cosine':
+                        scheduler.step(global_token_count)
+                        if args.sample_softmax > 0:
+                            scheduler_sparse.step(global_token_count)
+            else:
+                scheduler.step(global_token_count)
         else:
-            scheduler.step(global_token_count)
+            print("skipped iteration!")
             
+
         if should_log:
             elapsed_time = time.time() - log_start_time
             elapsed_steps = train_step - last_log_step
@@ -845,7 +905,6 @@ def main():
     #         with open(os.path.join(args.work_dir, 'final_model.pt'), 'wb') as f:
     #             with timeit('save'):
     #                 torch.save(model.module if args.distributed else model, f)
-
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
