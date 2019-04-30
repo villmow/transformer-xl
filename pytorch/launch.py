@@ -45,7 +45,10 @@ def main(args):
   #  'pip install -U protobuf' # tensorflow/models/issues/3995
 
   job.rsync('.')
-  job.run('killall python || pip install -r requirements.txt && echo failed && source activate pytorch_p36')
+
+  job.run(f'killall python || echo failed && '  # kill previous run
+          f'source activate {args.conda_env} && ' +
+          f'pip install -r requirements.txt')
 
   # Training script args
   default_params = [
