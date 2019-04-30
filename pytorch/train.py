@@ -616,7 +616,7 @@ def evaluate(eval_iter):
     return total_loss / total_len
 
 def train():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, best_val_loss, eval_start_time, log_start_time
+    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, log_start_time, train_step, last_log_step
     # Turn on training mode which enables dropout.
     model.train()
 
@@ -636,7 +636,6 @@ def train():
     train_iter = tr_iter.get_dist_iter(global_rank, max_rank)
 
     log_start_time = time.time()
-    last_log_step = 0
     for batch, (data, target, seq_len) in enumerate(train_iter):	
         # TODO(y): batch is dimension 1, why?
         assert seq_len == data.shape[0]
@@ -685,7 +684,7 @@ def train():
             optimizer_sparse.step()
 
         # step-wise learning rate annealing
-        train_step += 1  # todo(y): is this same as batch? dedup
+        train_step += 1  # global train step
         if args.scheduler in ['cosine', 'constant', 'dev_perf']:
             # linear warmup stage
             if global_token_count < args.warmup_tokens:
@@ -708,7 +707,9 @@ def train():
             # compute average loss over last logging interval
             cur_loss = train_loss / elapsed_steps
             log_str = '| epoch {:3d} step {:>8d} | {:>6d} batches | lr {:.3g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(epoch, train_step, batch+1, optimizer.param_groups[0]['lr'], elapsed_time * 1000 / elapsed_steps, cur_loss)
+                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(epoch, train_step, batch+1,
+                                                                 optimizer.param_groups[0]['lr'],
+                                                                 elapsed_time * 1000 / elapsed_steps, cur_loss)
             if args.dataset in ['enwik8', 'text8']:
                 log_str += ' | bpc {:9.5f}'.format(cur_loss / math.log(2))
             else:
@@ -783,7 +784,7 @@ def train():
 
 
 def main():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, best_val_loss, eval_start_time, log_start_time, epoch, model
+    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, best_val_loss, eval_start_time, log_start_time, epoch, model
 
     os.system('shutdown -c')  # cancel previous shutdown command
     
@@ -814,6 +815,7 @@ def main():
     # Loop over epochs.
     train_step = 0
     train_loss = 0
+    last_log_step = 0
     best_val_loss = None
 
     log_start_time = time.time()
