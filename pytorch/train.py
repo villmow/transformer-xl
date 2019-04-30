@@ -124,6 +124,9 @@ parser.add_argument('--varlen', action='store_true',
                     help='use variable length')
 parser.add_argument('--log-interval', type=int, default=200,
                     help='report interval')
+parser.add_argument('--verbose-log-steps', type=int, default=60,
+                    help='do logging at every step for this many steps at the start of training')
+
 parser.add_argument('--eval-interval', type=int, default=4000,
                     help='evaluation interval')
 parser.add_argument('--work_dir', default=None, type=str,
@@ -232,7 +235,10 @@ global_rank = env_rank()
 max_rank = env_world_size()
 torch.cuda.set_device(args.local_rank)
 
-
+def toscalar(t):  # use on python scalars/pytorch scalars
+    if isinstance(t, (float, int)): return t
+    if hasattr(t, 'item'): return t.item()
+    else: return t[0]
 
 # install pdb handler on error
 if global_rank == 0:
@@ -651,7 +657,7 @@ def evaluate(eval_iter):
     return total_loss / total_len
 
 def train():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, best_val_loss, eval_start_time, log_start_time
+    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, log_start_time, train_step, last_log_step
     # Turn on training mode which enables dropout.
     model.train()
 
@@ -669,9 +675,8 @@ def train():
     # TODO(b): fix varlen iter
     #train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
     train_iter = tr_iter.get_dist_iter(global_rank, max_rank)
-    for batch, (data, target, seq_len) in enumerate(train_iter): 
-        #data = torch.zeros_like(data)
-        #target = torch.zeros_like(target)
+    log_start_time = time.time()
+    for batch, (data, target, seq_len) in enumerate(train_iter):	
         # TODO(y): batch is dimension 1, why?
 
         assert seq_len == data.shape[0]
@@ -680,9 +685,10 @@ def train():
 
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)       # needed for NCCL sync
-        #batch_total = sum_tensor(batch_total)      # global batch size
-        total_tokens = batch_total.item()*seq_len*args.num_gpu
+        batch_total = sum_tensor(batch_total)      # global batch size
         
+        total_tokens = batch_total.item()*seq_len
+        should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
         global_token_count += total_tokens
         model.zero_grad()
         p = next(model.parameters())
@@ -692,7 +698,7 @@ def train():
             for i in range(args.batch_chunk):
                 data_i = data_chunks[i].contiguous()
                 target_i = target_chunks[i].contiguous()
-                with timeit('model', noop=train_step % args.log_interval != 0):
+                with timeit('model', noop=not should_log):
                     ret = model(data_i, target_i, *mems[i])
                 loss, mems[i] = ret[0], ret[1:]
                 loss = loss.float().mean().type_as(loss) / args.batch_chunk
@@ -755,16 +761,18 @@ def train():
                 scheduler.step(global_token_count)
         else:
             print("skipped iteration!")
-
             
-        
-        if train_step % args.log_interval == 0:
-            cur_loss = (train_loss/args.static_loss_scale) / args.log_interval
-            elapsed = time.time() - log_start_time
+
+        if should_log:
+            elapsed_time = time.time() - log_start_time
+            elapsed_steps = train_step - last_log_step
+            
+            # compute average loss over last logging interval
+            cur_loss = train_loss / elapsed_steps
             log_str = '| epoch {:3d} step {:>8d} | {:>6d} batches | lr {:.3g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(
-                epoch, train_step, batch+1, optimizer.param_groups[0]['lr'],
-                elapsed * 1000 / args.log_interval, cur_loss)
+                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(epoch, train_step, batch+1,
+                                                                 optimizer.param_groups[0]['lr'],
+                                                                 elapsed_time * 1000 / elapsed_steps, cur_loss)
             if args.dataset in ['enwik8', 'text8']:
                 log_str += ' | bpc {:9.5f}'.format(cur_loss / math.log(2))
             else:
@@ -773,12 +781,15 @@ def train():
             log_tb('loss/epoch', epoch)
             log_tb('loss/loss', cur_loss)
             log_tb('loss/ppl', math.exp(cur_loss))
-            log_tb('times/step', 1000*elapsed/args.log_interval)
-            log_tb('lr', optimizer.param_groups[0]['lr'])
+            log_tb('times/step', 1000*elapsed_time/elapsed_steps)
+            current_lr = optimizer.param_groups[0]['lr']
+            log_tb('lr', current_lr)
+            log_tb('lr_normalized1', current_lr/toscalar(batch_total))
+            log_tb('lr_normalized2', current_lr/toscalar(total_tokens))
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
 
-            time_per_batch = elapsed / args.log_interval
+            time_per_batch = elapsed_time / elapsed_steps
             time_per_sample = time_per_batch / args.batch_size
             time_per_token = time_per_sample / args.tgt_len
             
@@ -795,6 +806,7 @@ def train():
             # todo(y): refactor to init loss at the top
             train_loss = 0
             log_start_time = time.time()
+            last_log_step = train_step
 
         # TODO(b): refactor this to distribute evaluation across machines instead of doing the same work on all of them
         # https://github.com/yaroslavvb/imagenet18/blob/282b5f5aeaf7ea7e461b2ffa06895419980b657d/training/train_imagenet_nv.py#L267
@@ -835,12 +847,18 @@ def train():
 
 
 def main():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, best_val_loss, eval_start_time, log_start_time, epoch, model
+    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, best_val_loss, eval_start_time, log_start_time, epoch, model
 
-    os.system('shutdown -c')  # cancel previous shutdown command
+    if args.local_rank > 0:
+        pass   # skip shutdown when rank is explicitly set + not zero rank
+    else:
+        os.system('shutdown -c')
     
     if args.distributed:
         logger.info(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
+
+        logger.info('addr', os.environ['MASTER_ADDR'], 'port', os.environ['MASTER_PORT'])
+        
         dist.init_process_group(backend=args.dist_backend,
                                 init_method=args.dist_url,
                                 world_size=env_world_size())
@@ -866,6 +884,7 @@ def main():
     # Loop over epochs.
     train_step = 0
     train_loss = 0
+    last_log_step = 0
     best_val_loss = None
 
     log_start_time = time.time()
