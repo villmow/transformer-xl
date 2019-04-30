@@ -17,7 +17,8 @@ parser.add_argument('--ncluster_backend', type=str, default='aws',
                     help='Use spot instance')
 
 parser.add_argument('--skip_setup', action='store_true',
-                    help='Make startup slightly faster by skiping various initialization tasks, like tmux/efs setup. Only use on reruns.')
+                    help='Make startup slightly faster by skiping various initialization tasks, like '
+                         'tmux/efs setup. Only use on reruns.')
 
 # environment/dependencies
 parser.add_argument('--image_name', type=str, default='reference03',
@@ -54,14 +55,24 @@ def main(args):
 
   num_gpus = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpus']
   gpu_mem_gb = ncluster.aws_backend.INSTANCE_INFO[args.instance_type]['gpu_mem_gb']
-  global_batch = num_gpus * gpu_mem_gb * 2 * args.machines
-  print("using global batch ", global_batch)  # 512
-  lr = .00025 * num_gpus * gpu_mem_gb * args.machines / 32
-  bs = global_batch // num_gpus
-  print("using local batch ", bs)  # 64
+  
+  local_batch = 64
+  base_lr = 0.00025   # reference lr for 1 worker, batch size 64
+  
+  num_workers = num_gpus * args.machines
+  global_batch = local_batch * num_workers
+  #  global_batch = num_gpus * gpu_mem_gb * 2 * args.machines
+  print("using global batch ", global_batch)  # 512=8*32*2*1
+  lr = base_lr * num_workers
   if '24x' in args.instance_type:
-    bs = 96 # nonlinear bs scaling
-    lr = .005 * args.machines
+    local_batch = 96  # nonlinear bs scaling
+    global_batch = local_batch * num_workers
+    base_lr = base_lr * 1.5  # linear scaling for 64 -> 96 batch size
+    base_lr = base_lr * 5/3   # ben's super-linear scaling factor (absorb into base_lr eventually)
+    print(f"Current base_lr {base_lr}, expected 0.000625")
+    #    lr = .005 * args.machines   # should be 0.003
+    lr = base_lr * num_workers
+    print(f"Current lr {lr} expected 0.005")
 
   # todo(y): consistency with - and _ in args
   # Based on run_wt103_base.sh
@@ -88,11 +99,10 @@ def main(args):
     '--tgt_len', 128,
     '--mem_len', 128,
     '--eval_tgt_len', 128,
-    '--batch_size', bs,  # per-gpu batch size
+    '--batch_size', local_batch,  # per-gpu batch size
     '--eval-interval', 400,
-    #'--scheduler', 'finder', # Use max_tokens 2e7 and log-interval 10
+    # '--scheduler', 'finder', # Use max_tokens 2e7 and log-interval 10
   ]
-
 
   training_params = default_params + training_params
   training_params = ' '.join(str(p) for p in training_params)
