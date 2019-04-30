@@ -796,6 +796,9 @@ def main():
     
     if args.distributed:
         logger.info(f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
+
+        logger.info('addr', os.environ['MASTER_ADDR'], 'port', os.environ['MASTER_PORT'])
+        
         dist.init_process_group(backend=args.dist_backend,
                                 init_method=args.dist_url,
                                 world_size=env_world_size())
