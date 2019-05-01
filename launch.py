@@ -34,6 +34,9 @@ parser.add_argument('--image_name', type=str, default='',
                     help="use custom AMI ")
 parser.add_argument('--conda_env', type=str, default='',
                     help='use custom conda env')
+parser.add_argument('--checkpoint', type=str, default='',
+                    help='restore from this checkpoint')
+
 args = parser.parse_args()
 
 
@@ -72,6 +75,16 @@ one_machine_fp16 = {
     'local_batch_size': 96,
     'machines': 1,
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+# logs: yaro-fp16
+one_machine_fp16_checkpoints = {
+    'base_lr': 0,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+#    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--optim', 'sgd']
+    'extra_worker_params': ['--dynamic_loss_scale', '--optim', 'sgd']
 }
 
 
@@ -144,14 +157,14 @@ if __name__ == '__main__':
     job = ncluster.make_job(name=args.name,
                             run_name=f"{args.name}",
                             num_tasks=config.machines,
-                            image_name=IMAGE_NAME,
+                            image_name=config.image_name,
                             instance_type=config.instance_type,
                             spot=not args.nospot,
                             skip_setup=args.skip_setup)
 
     job.rsync('.')
     job.run(f'killall python || echo failed && '  # kill previous run
-            f'source activate {CONDA_ENV} && ' +
+            f'source activate {config.conda_env} && ' +
             f'pip install -r requirements.txt')
 
     # Training script args
@@ -198,8 +211,13 @@ if __name__ == '__main__':
                      '--distributed']
     worker_params.extend(training_params)
 
+    user_params = []
     # pass through some user-provided settings that were arguments to the launcher script
-    user_params = ['--checkpoint_each_epoch', args.checkpoint_each_epoch]
+    if args.checkpoint_each_epoch:
+        user_params.extend(['--checkpoint_each_epoch', args.checkpoint_each_epoch])
+    if args.checkpoint:
+        user_params.extend(['--checkpoint', args.checkpoint])
+
     worker_params.extend(user_params)
 
     if 'extra_worker_params' in config:

@@ -28,6 +28,9 @@ from mem_transformer import MemTransformerLM
 from lr_finder import LRFinder
 from pytorch_lamb import Lamb, log_lamb_rs
 
+from util import toscalar
+import util
+
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
 parser.add_argument('--run_name', type=str, default='txl', help="name of run")
@@ -90,8 +93,6 @@ parser.add_argument('--clip_nonemb', action='store_true',
 parser.add_argument('--max_tokens', type=int, default=1.8e9, help='upper epoch limit affecting LR schedule')
 parser.add_argument('--batch_size', type=int, default=60,
                     help='batch size')
-parser.add_argument('--batch_chunk', type=int, default=1,
-                    help='split batch into chunks to save memory')
 parser.add_argument('--tgt_len', type=int, default=70,
                     help='number of tokens to predict')
 parser.add_argument('--eval_tgt_len', type=int, default=50,
@@ -123,6 +124,8 @@ parser.add_argument('--eval_interval', type=int, default=4000,
 
 parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
                     help='whether to save checkpoint at each epoch')
+parser.add_argument('--checkpoint', type=str, default='',
+                    help='checkpoint file to use to restore training')
 
 parser.add_argument('--work_dir', default=None, type=str,
                     help='Experiment directory. Defaults to logdir')
@@ -157,8 +160,6 @@ parser.add_argument('--num_gpu', type=int, default=1,
                     help="number of gpus (used to make sure # tokens is correct)")
 parser.add_argument('--bpe', action='store_true', default=False,
                     help="Use BPE instead of traditional vocabulary.")
-parser.add_argument('--true_fp16', action='store_true', default=False,
-                    help="Use true_fp16 as opposed to mixed precision")
 parser.add_argument('--fp16', action='store_true',
                     help='Run in pseudo-fp16 mode (fp16 storage fp32 math).')
 parser.add_argument('--static_loss_scale', type=float, default=1,
@@ -188,139 +189,77 @@ parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
 args = parser.parse_args()
 args.tied = not args.not_tied
 
-
-def env_world_size(): return int(os.environ.get('WORLD_SIZE', 1))
-
-
-def env_rank(): return int(os.environ.get('RANK', 0))
-
-
-def sum_tensor(tensor):
-    if not args.distributed:
-        return tensor
-    rt = tensor.clone()
-    # TODO(y): fix UserWarning: torch.distributed.reduce_op is deprecated, please use torch.distributed.ReduceOp instead
-    #  warnings.warn("torch.distributed.reduce_op is deprecated, please use "
-    # /home/ubuntu/anaconda3/envs/pytorch_p36/lib/python3.6/site-packages/torch/distributed/distributed_c10d.py:86: U
-
-    dist.all_reduce(rt, op=dist.reduce_op.SUM)
-    return rt
-
-
-# no_op method/object that accept every signature
-class NoOp:
-    def __getattr__(self, *_args):
-        def no_op(*_args, **_kwargs): pass
-        return no_op
-
-
-# todo(y): optimnizer/model are also global variables, fix
-def save_checkpoint(model_1, optimizer_1, suffix=''):
-    if not is_master:
-        return
-    with timeit('save'):
-        with open(args.work_dir + f'/model-{suffix}.pt', 'wb') as f_1:
-            torch.save(model_1, f_1)
-        with open(args.work_dir + f'/optimizer-{suffix}.pt', 'wb') as f_1:
-            torch.save(optimizer_1.state_dict(), f_1)
-
-
 # global variables
 global_timeit_dict = OrderedDict()
 global_example_count = 0
 global_token_count = 0
-event_writer = NoOp()
+event_writer = util.NoOp()
 logdir = None
 epoch = 0
 train_step = 0
 
-# TODO(y): replace print's with log.console
-
 local_rank = args.local_rank
-global_rank = env_rank()
-max_rank = env_world_size()
+global_rank = util.get_global_rank()
+max_rank = util.get_world_size()
 torch.cuda.set_device(args.local_rank)
 
-
-def toscalar(t):  # use on python scalars/pytorch scalars
-    if isinstance(t, (float, int)): return t
-    if hasattr(t, 'item'):
-        return t.item()
-    else:
-        return t[0]
-
-
-# install pdb handler on error
+# break into PDB debugger on exception
 if global_rank == 0:
-    def info(type, value, tb):
-        if hasattr(sys, 'ps1') or not sys.stderr.isatty():
-            # we are in interactive mode or we don't have a tty-like
-            # device, so we call the default hook
-            sys.__excepthook__(type, value, tb)
-        else:
-            import traceback, pdb
-            # we are NOT in interactive mode, print the exception...
-            traceback.print_exception(type, value, tb)
-            print()
-            # ...then start the debugger in post-mortem mode.
-            # pdb.pm() # deprecated
-            pdb.post_mortem(tb)  # more "modern"
-
-
-    sys.excepthook = info
+    util.pdb_on_error()
 
 
 class FileLogger:
-    def __init__(self, output_dir, is_master=False, is_rank0=False):
+    def __init__(self, output_dir: str, is_master=False, is_rank0=False):
         self.output_dir = output_dir
         if not os.path.exists(self.output_dir):
-            if is_master:
+            if global_rank == 0:
                 os.makedirs(self.output_dir)
         # only log on one process per node
         if is_rank0:
-            self.logger = self.get_logger(output_dir, log_to_file=is_master)
+            self.logger = FileLogger.get_logger(output_dir, log_to_file=is_master)
         else:
-            self.logger = NoOp()
+            self.logger = util.NoOp()
 
-    def exception(self, *args, **kwargs):
-        return self.logger.exception(*args, **kwargs)
+    def exception(self, *args_, **kwargs):
+        return self.logger.exception(*args_, **kwargs)
 
-    def get_logger(self, output_dir, log_to_file=True):
-        logger = logging.getLogger('txl training')
-        logger.setLevel(logging.DEBUG)
+    @staticmethod
+    def get_logger(output_dir: str, log_to_file: bool = True):
+        logger_ = logging.getLogger('txl training')
+        logger_.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(message)s')
 
         if log_to_file:
             vlog = logging.FileHandler(output_dir + '/info.log')
             vlog.setLevel(logging.INFO)
             vlog.setFormatter(formatter)
-            logger.addHandler(vlog)
+            logger_.addHandler(vlog)
 
             eventlog = logging.FileHandler(output_dir + '/warn.log')
             eventlog.setLevel(logging.WARN)
             eventlog.setFormatter(formatter)
-            logger.addHandler(eventlog)
+            logger_.addHandler(eventlog)
 
             time_formatter = logging.Formatter('%(asctime)s - %(filename)s:%(lineno)d - %(message)s')
             debuglog = logging.FileHandler(output_dir + '/debug.log')
             debuglog.setLevel(logging.DEBUG)
             debuglog.setFormatter(time_formatter)
-            logger.addHandler(debuglog)
+            logger_.addHandler(debuglog)
 
         console = logging.StreamHandler()
         console.setFormatter(formatter)
         console.setLevel(logging.DEBUG)
-        logger.addHandler(console)
-        return logger
+        logger_.addHandler(console)
+        return logger_
 
-    def debug(self, *args):
-        self.logger.debug(*args)
+    def debug(self, *args_):
+        self.logger.debug(*args_)
 
-    def warn(self, *args):
-        self.logger.warn(*args)
+    def warn(self, *args_):
+        self.logger.warn(*args_)
 
-    def info(self, *args):
-        self.logger.info(*args)
+    def info(self, *args_):
+        self.logger.info(*args_)
 
 
 class timeit:
@@ -337,7 +276,7 @@ class timeit:
         self.start = time.perf_counter()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *_args):
         if self.noop:
             return
         self.end = time.perf_counter()
@@ -368,14 +307,11 @@ if args.d_embed < 0:
     args.d_embed = args.d_model
 
 assert args.ext_len >= 0, 'extended context length must be non-negative'
-assert args.batch_size % args.batch_chunk == 0
 
 if not args.work_dir:
     args.work_dir = args.logdir
 
-is_master = (not args.distributed) or (global_rank == 0)
-is_rank0 = args.local_rank == 0
-logger = FileLogger(args.logdir, is_master=is_master, is_rank0=is_rank0)
+logger = FileLogger(args.logdir, is_master=(global_rank == 0), is_rank0=(args.local_rank == 0))
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -466,47 +402,22 @@ def weights_init(m):
             init_bias(m.r_bias)
 
 
-def update_dropout(m):
-    classname = m.__class__.__name__
-    if classname.find('Dropout') != -1:
-        if hasattr(m, 'p'):
-            m.p = args.dropout
+model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
+                         args.d_head, args.d_inner, args.dropout, args.dropatt,
+                         tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+                         tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+                         ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
+                         same_length=args.same_length, attn_type=args.attn_type,
+                         clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
 
-
-def update_dropatt(m):
-    if hasattr(m, 'dropatt'):
-        m.dropatt.p = args.dropatt
-
-
-if args.restart:
-    with open(os.path.join(args.restart_dir, 'model.pt'), 'rb') as f:
-        model = torch.load(f)
-    if not args.fp16:
-        model = model.float()
-    model.apply(update_dropout)
-    model.apply(update_dropatt)
-else:
-    model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
-                             args.d_head, args.d_inner, args.dropout, args.dropatt,
-                             tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-                             tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-                             ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
-                             same_length=args.same_length, attn_type=args.attn_type,
-                             clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
-    model.apply(weights_init)
-    model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+# todo(y): only initialize on rank0
+model.apply(weights_init)
+model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 args.n_all_param = sum([p.nelement() for p in model.parameters()])
 args.n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
 
-if args.fp16 and not args.true_fp16:
-    # model = model.half()
-    # for p in model.parameters():
-    #    p.data.fill_(0)
-
+if args.fp16:
     model = FP16_Module(model)
-
-elif args.fp16 and args.true_fp16:
-    model = model.half()
 
 model = model.to(device)
 
@@ -577,7 +488,7 @@ elif args.scheduler == 'dev_perf':
 elif args.scheduler == 'constant':
     pass
 
-if args.fp16 and not args.true_fp16:
+if args.fp16:
     # If args.dynamic_loss_scale is False, static_loss_scale will be used.
     # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
     optimizer = FP16_Optimizer(optimizer,
@@ -601,9 +512,11 @@ for k, v in args.__dict__.items():
     logger.info('    - {} : {}'.format(k, v))
 logger.info('=' * 100)
 
+
 ###############################################################################
 # Training code
 ###############################################################################
+
 
 def evaluate(eval_iter):
     # Turn on evaluation mode which disables dropout.
@@ -612,7 +525,7 @@ def evaluate(eval_iter):
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
 
-    if args.fp16 and not args.true_fp16:
+    if args.fp16:
         if args.mem_len == 0:
             # Have to unwrap twice: DDP & FP16
             model.module.module.reset_length(args.eval_tgt_len,
@@ -634,8 +547,9 @@ def evaluate(eval_iter):
         mems = tuple()
         bar = tqdm.tqdm(eval_iter, leave=False, desc="Eval")
         for i, (data, target, seq_len) in enumerate(bar):
-            if args.max_eval_steps > 0 and i >= args.max_eval_steps:
-                break
+            if args.max_eval_steps > 0:
+                if i >= args.max_eval_steps:
+                    break
             ret = model(data, target, *mems)
             loss, mems = ret[0], ret[1:]
             loss = loss.mean()
@@ -644,7 +558,7 @@ def evaluate(eval_iter):
             total_len += seq_len
 
     # Switch back to the training mode
-    if args.fp16 and not args.true_fp16:
+    if args.fp16:
         model.module.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
     else:
         model.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
@@ -665,11 +579,7 @@ def train():
     log_tb('sizes/params', args.n_all_param)
     log_tb('sizes/non_emb_params', args.n_nonemb_param)
 
-    # TODO(y): get rid of this (who chunks batches anyway?)
-    if args.batch_chunk > 1:
-        mems = [tuple() for _ in range(args.batch_chunk)]
-    else:
-        mems = tuple()
+    mems = tuple()
     train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(train_iter):
@@ -682,43 +592,24 @@ def train():
 
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)  # needed for NCCL sync
-        batch_total = sum_tensor(batch_total)  # global batch size
+        batch_total = util.dist_sum_tensor(batch_total)  # global batch size
 
         total_tokens = batch_total.item() * seq_len
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
 
         global_token_count += total_tokens
         model.zero_grad()
-        if args.batch_chunk > 1:
-            data_chunks = torch.chunk(data, args.batch_chunk, 1)
-            target_chunks = torch.chunk(target, args.batch_chunk, 1)
-            for i in range(args.batch_chunk):
-                data_i = data_chunks[i].contiguous()
-                target_i = target_chunks[i].contiguous()
-                with timeit('model', noop=not should_log):
-                    ret = model(data_i, target_i, *mems[i])
-                loss, mems[i] = ret[0], ret[1:]
-                loss = loss.float().mean().type_as(loss) / args.batch_chunk
-                if args.fp16:
-                    if args.true_fp16:
-                        (loss * args.static_loss_scale).backward()
-                    else:
-                        optimizer.backward(loss)
-                else:
-                    loss.backward()
-                train_loss += loss.float().item()
-        else:
-            ret = model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
-            loss = loss.float().mean().type_as(loss)
-            with timeit('backwards', noop=not should_log):
-                if args.fp16:
-                    optimizer.backward(loss)
-                else:
-                    loss.backward()
-            train_loss += loss.float().item()
+        ret = model(data, target, *mems)
+        loss, mems = ret[0], ret[1:]
+        loss = loss.float().mean().type_as(loss)
+        with timeit('backwards', noop=not should_log):
+            if args.fp16:
+                optimizer.backward(loss)
+            else:
+                loss.backward()
+        train_loss += loss.float().item()
 
-        if args.fp16 and not args.true_fp16:
+        if args.fp16:
             optimizer.clip_master_grads(args.clip)
         else:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -730,7 +621,7 @@ def train():
         # step-wise learning rate annealing
         train_step += 1
 
-        if not args.true_fp16 and not (args.fp16 and optimizer.overflow):
+        if not (args.fp16 and optimizer.overflow):
             if args.scheduler in ['cosine', 'constant', 'dev_perf']:
                 # linear warmup stage
                 if global_token_count < args.warmup_tokens:
@@ -796,10 +687,9 @@ def train():
         if train_step % args.eval_interval == 0:
             val_loss = evaluate(va_iter)
             if not best_val_loss or val_loss < best_val_loss:
-                if not args.debug and is_master:
+                if not args.debug:
                     logger.info('Saving checkpoint for new best loss')
-                    save_checkpoint(model.module if args.distributed else model,
-                                    optimizer, suffix='best')
+                    util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
 
                 best_val_loss = val_loss
 
@@ -827,8 +717,7 @@ def train():
 
     if args.checkpoint_each_epoch:
         logger.info(f'Saving checkpoint for epoch {epoch}')
-        save_checkpoint(model.module if args.distributed else model,
-                        optimizer, suffix=f'{epoch}')
+        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
 
 
 def main():
@@ -840,27 +729,26 @@ def main():
     else:
         os.system('shutdown -c')
 
-    if args.distributed:
-        logger.info(
-            f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {env_world_size()}')
+    logger.info(
+        f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
 
-        dist.init_process_group(backend=args.dist_backend,
-                                init_method=args.dist_url,
-                                world_size=env_world_size())
-        assert (env_world_size() == dist.get_world_size())
-        logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
+    dist.init_process_group(backend=args.dist_backend,
+                            init_method=args.dist_url,
+                            world_size=util.get_world_size())
+    assert (util.get_world_size() == dist.get_world_size())
+    logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
 
-        model = DistributedDataParallel(model,
-                                        device_ids=[args.local_rank],
-                                        output_device=args.local_rank)
+    model = DistributedDataParallel(model,
+                                    device_ids=[args.local_rank],
+                                    output_device=args.local_rank)
 
-    # global global_example_count, global_token_count, event_writer, logdir
-    #    logdir = f'{args.logdir_root}/{args.run_name}-{current_timestamp()}'
+    if args.checkpoint:
+        util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
+
     logdir = args.logdir
     assert os.path.exists(logdir)
-    #    os.system(f'mkdir -p {logdir}')
 
-    if is_master and not args.debug:
+    if global_rank == 0 and not args.debug:
         event_writer = SummaryWriter(logdir)
 
     log_tb("first", time.time())
@@ -869,8 +757,7 @@ def main():
     # test checkpoint writing
     if args.checkpoint_each_epoch:
         logger.info(f'Saving checkpoint for epoch {epoch}')
-        save_checkpoint(model.module if args.distributed else model,
-                        optimizer, suffix=f'{epoch}')
+        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{0}')
 
     # Loop over epochs.
     train_step = 0
@@ -925,7 +812,7 @@ if __name__ == '__main__':
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
             main()
-        if not args.skip_auto_shutdown and is_master:
+        if not args.skip_auto_shutdown and args.local_rank == 0:
             os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
     except Exception as e:
         import traceback

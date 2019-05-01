@@ -1,3 +1,6 @@
+torch
+pytz
+numpy
 ncluster
 tqdm
 pytorch_pretrained_bert
