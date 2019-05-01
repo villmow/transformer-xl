@@ -75,6 +75,21 @@ one_machine_fp16 = {
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
+# Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
+# Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
+# logs: ben-txl-large-slow.01
+one_machine_fp16_large = {
+    'base_lr': 0.00025,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 16,
+    'machines': 1,
+    'extra_worker_params': [
+        '--fp16', '--dynamic_loss_scale', '--bpe',
+        '--init_std', 0.005,
+        '--div_val', 4,
+    ]
+}
+
 # logs: yaro-fp16
 one_machine_fp16_checkpoints = {
     'base_lr': 0,
@@ -85,7 +100,7 @@ one_machine_fp16_checkpoints = {
     'extra_worker_params': ['--dynamic_loss_scale', '--optim', 'sgd']
 }
 
-# smaller p3.16 machine,
+# smaller p3.16 machine, logs: ben-bpe
 one_machine_fp16_small = {
     'base_lr': 0.000125 * 5 / 3 / 2,  # from ben-big-lr.09
     'instance_type': 'p3.16xlarge',
@@ -185,21 +200,21 @@ if __name__ == '__main__':
         '--dataset', 'wt103',
         '--adaptive',
         '--log_interval', 100,
-        '--n_layer', 16,
-        '--d_model', 512,
-        '--n_head', 8,
-        '--d_head', 48,
-        '--d_inner', 2048,
-        '--dropout', 0.1,
-        '--dropatt', 0.0,
+        '--n_layer', 18,
+        '--d_model', 1024,
+        '--n_head', 16,
+        '--d_head', 64,
+        '--d_inner', 4096,
+        '--dropout', 0.2,
+        '--dropatt', 0.2,
         '--optim', 'lamb',
         '--lr', lr,
         '--wd', 0,
-        '--max_tokens', int(1.8e9),
-        '--tgt_len', 128,
-        '--mem_len', 128,
+        '--max_tokens', int(1.8e10), # 20x
+        '--tgt_len', 384,
+        '--mem_len', 384,
         '--eval_tgt_len', 128,
-        '--batch_size', local_batch_size,  # per-gpu batch size
+        '--batch_size', local_batch_size,  # per-gpu batch size # 128
         '--eval_interval', 4000,
     ]
 
