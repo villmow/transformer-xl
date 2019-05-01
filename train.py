@@ -388,7 +388,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ###############################################################################
 # Load data
 ###############################################################################
-corpus = get_lm_corpus(args.data, args.dataset), use_bpe=args.bpe)
+corpus = get_lm_corpus(args.data, args.dataset, use_bpe=args.bpe)
 ntokens = len(corpus.vocab)
 args.n_token = ntokens
 
