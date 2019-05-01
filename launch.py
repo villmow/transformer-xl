@@ -4,6 +4,7 @@
 import argparse
 from attrdict import AttrDict
 import re
+import util
 
 import ncluster
 
@@ -17,11 +18,10 @@ parser.add_argument('--nospot', action='store_true',
 
 parser.add_argument('--skip_setup', action='store_true',
                     help='Make startup slightly faster by skiping various initialization tasks, like '
-                    'tmux/efs setup. Only use on reruns.')
+                         'tmux/efs setup. Only use on reruns.')
 
 # network settings
 parser.add_argument('--num_rings', type=int, default=16)
-
 
 # config flags for trying configurations outside of existing configs
 parser.add_argument('--machines', type=int, default=0,
@@ -39,38 +39,36 @@ parser.add_argument('--checkpoint', type=str, default='',
 
 args = parser.parse_args()
 
-
 # default environment settings, should change rarely since they affect
 # all configs
 IMAGE_NAME = 'reference03'
 CONDA_ENV = 'pytorch_p36'
 
-# 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global batch size
+# 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global
+# batch size
 # local_batch_size: per-GPU batch size
 BASE_LR_BATCHSIZE = 32
 
 # logs: yaro-1gpu
 one_gpu = {
     # 24x smaller batch than ben-big-lr.09, use 5x more agressive learning rate
-    'base_lr': 0.000125*5/3*5,   
+    'base_lr': 0.000125 * 5 / 3 * 5,
     'local_batch_size': 32,
     'instance_type': 'p3.2xlarge',
     'machines': 1
 }
 
-
 # logs: yaro-one.08
 one_machine = {
-    'base_lr': 0.000125*5/3,  # from ben-big-lr.09
+    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
 }
 
-
 # logs: yaro-fp16
 one_machine_fp16 = {
-    'base_lr': 0.000125*5/3,  # from ben-big-lr.09
+    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
@@ -83,42 +81,41 @@ one_machine_fp16_checkpoints = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-#    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--optim', 'sgd']
+    #    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--optim', 'sgd']
     'extra_worker_params': ['--dynamic_loss_scale', '--optim', 'sgd']
 }
 
-
 # smaller p3.16 machine,
 one_machine_fp16_small = {
-    'base_lr': 0.000125*5/3/2,  # from ben-big-lr.09
+    'base_lr': 0.000125 * 5 / 3 / 2,  # from ben-big-lr.09
     'instance_type': 'p3.16xlarge',
-    'local_batch_size': 96//2,
+    'local_batch_size': 96 // 2,
     'machines': 1,
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
-
 two_machines = {
-    'base_lr': 0.000125*5/3,    # yaro-two.07
+    'base_lr': 0.000125 * 5 / 3,  # yaro-two.07
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 2,
 }
 
 eight_machines = {
-    'base_lr': 0.000125,
+    'base_lr': 0.000125/2,  # remove ben's 5/3 tweak, and additional penalty of 2x
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 8,
+    'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--warmup_tokens', 50e6]
 }
 
 
 def _get_nccl_params():
     params = f'NCCL_DEBUG=VERSION '
 
-    if args.machines > 1:
-        params += f'NCCL_MIN_NRINGS={args.num_rings} ' \
-            f'NCCL_MAX_NRINGS={args.num_rings} '
+    params += f'NCCL_MIN_NRINGS={args.num_rings} ' \
+        f'NCCL_MAX_NRINGS={args.num_rings} '
     return params
 
 
@@ -198,7 +195,6 @@ if __name__ == '__main__':
         '--optim', 'lamb',
         '--lr', lr,
         '--wd', 0,
-        '--warmup_tokens', 0,
         '--max_tokens', int(1.8e9),
         '--tgt_len', 128,
         '--mem_len', 128,
@@ -206,7 +202,7 @@ if __name__ == '__main__':
         '--batch_size', local_batch_size,  # per-gpu batch size
         '--eval_interval', 4000,
     ]
-    
+
     worker_params = ['--logdir', job.logdir,
                      '--distributed']
     worker_params.extend(training_params)
@@ -215,8 +211,13 @@ if __name__ == '__main__':
     # pass through some user-provided settings that were arguments to the launcher script
     if args.checkpoint_each_epoch:
         user_params.extend(['--checkpoint_each_epoch', args.checkpoint_each_epoch])
-    if args.checkpoint:
-        user_params.extend(['--checkpoint', args.checkpoint])
+
+    if args.checkpoint or config.checkpoint:
+        user_params.extend(['--checkpoint', util.one_of([args.checkpoint, config.checkpoint])])
+
+    if config.warmup_tokens:
+        user_params.extend(['--warmup_tokens', config.warmup_tokens])
+        
 
     worker_params.extend(user_params)
 

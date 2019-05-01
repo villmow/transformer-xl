@@ -3,7 +3,6 @@ import sys
 
 import torch
 import torch.distributed as dist
-import torch.nn.parallel as torch_parallel
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -45,6 +44,15 @@ def get_global_rank() -> int:
     return int(os.environ.get('RANK', 0))
 
 
+def one_of(l):
+    assert len(l) == 2
+    if l[0]:
+        return l[0]
+    elif l[1]:
+        return l[1]
+    else:
+        assert f"List {l} has more than one non-zero entries"
+    
 def dist_sum_tensor(tensor):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
