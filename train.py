@@ -111,8 +111,6 @@ parser.add_argument('--div_val', type=int, default=1,
                     help='divident value for adapative input and softmax')
 parser.add_argument('--pre_lnorm', action='store_true',
                     help='apply LayerNorm to the input instead of the output')
-parser.add_argument('--varlen', action='store_true',
-                    help='use variable length')
 parser.add_argument('--log_interval', type=int, default=200,
                     help='logging interval in number of steps')
 parser.add_argument('--retune_interval', type=int, default=5,
@@ -469,7 +467,7 @@ def train():
     log_tb('sizes/seq_size', args.tgt_len)
 
     mems = tuple()
-    train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
+    train_iter = tr_iter
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(train_iter):
         # TODO(y): batch is dimension 1, why?

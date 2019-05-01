@@ -75,6 +75,45 @@ one_machine_fp16 = {
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
+# /ncluster/runs.new/yaro-fp16.09
+one_machine_fp16_2xlr = {
+    'base_lr': 0.000125 * 5 / 3 * 2,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+# /ncluster/runs.new/yaro-fp16.10
+one_machine_fp16_4xlr = {
+    'base_lr': 0.000125 * 5 / 3 * 4,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+# /ncluster/runs.new/yaro-fp16.11
+# nans after 30 seconds
+one_machine_fp16_8xlr = {
+    'base_lr': 0.000125 * 5 / 3 * 8,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+one_machine_fp16_checkpoint = {
+    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+
+# /ncluster/runs.new/yaro-two-fp16.04 (with checkpoints)
 two_machines_fp16 = {
     'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
     'instance_type': 'p3dn.24xlarge',
@@ -83,29 +122,21 @@ two_machines_fp16 = {
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
-one_machine_fp16_checkpoints = {
-    'base_lr': 0,
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 1,
-    #    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--optim', 'sgd']
-    'extra_worker_params': ['--dynamic_loss_scale', '--optim', 'sgd']
-}
-
-# smaller p3.16 machine,
-one_machine_fp16_small = {
-    'base_lr': 0.000125 * 5 / 3 / 2,  # from ben-big-lr.09
-    'instance_type': 'p3.16xlarge',
-    'local_batch_size': 96 // 2,
-    'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
-}
-
 two_machines = {
     'base_lr': 0.000125 * 5 / 3,  # yaro-two.07
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 2,
+}
+
+
+# yaro-four
+four_machines = {
+    'base_lr': 0.000125,  # remove ben's 5/3 tweak, and additional penalty of 2x
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 4,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
 eight_machines = {
