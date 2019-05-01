@@ -90,14 +90,24 @@ one_machine_fp16_large = {
     ]
 }
 
-# Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
-# Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
-# logs: ben-txl-large-slow.01
+# fork of one_machine_fp16_large
 one_machine_fp16_large_four = {
     'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 4,
+    'extra_worker_params': [
+        '--fp16', '--dynamic_loss_scale', '--bpe',
+        '--init_std', 0.005,
+        '--div_val', 1
+    ]
+}
+
+one_machine_fp16_large_eight = {
+    'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 16,
+    'machines': 8,
     'extra_worker_params': [
         '--fp16', '--dynamic_loss_scale', '--bpe',
         '--init_std', 0.005,
