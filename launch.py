@@ -2,7 +2,7 @@
 """Launch training on AWS with 8 GPUs."""
 
 import argparse
-from attrdict import AttrDict
+from attrdict import AttrDict, AttrDefault
 import re
 import util
 
@@ -75,7 +75,14 @@ one_machine_fp16 = {
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
-# logs: yaro-fp16
+two_machines_fp16 = {
+    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 2,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
 one_machine_fp16_checkpoints = {
     'base_lr': 0,
     'instance_type': 'p3dn.24xlarge',
@@ -128,16 +135,17 @@ if __name__ == '__main__':
         assert not args.machines, "specify number of machines as part of config"
         assert re.match('\\w+', args.config)
         assert args.config in globals()
-        config = AttrDict(eval(args.config))
+        config = eval(args.config)
 
     else:  # setting config vars through command-line flags
         assert args.instance_type
         assert args.machines
-        config = AttrDict({'base_lr': 0.000125 * 5 / 3,
-                           'local_batch_size': 96,
-                           'instance_type': args.instance_type,
-                           'machines': args.machines})
+        config = {'base_lr': 0.000125 * 5 / 3,
+                  'local_batch_size': 96,
+                  'instance_type': args.instance_type,
+                  'machines': args.machines}
 
+    config = AttrDefault(str, config)     # easier access to dictionary entries
     config.image_name = IMAGE_NAME
     config.conda_env = CONDA_ENV
 
@@ -213,7 +221,8 @@ if __name__ == '__main__':
         user_params.extend(['--checkpoint_each_epoch', args.checkpoint_each_epoch])
 
     if args.checkpoint or config.checkpoint:
-        user_params.extend(['--checkpoint', util.one_of([args.checkpoint, config.checkpoint])])
+        user_params.extend(['--checkpoint',
+                            util.one_of([args.checkpoint, config.checkpoint])])
 
     if config.warmup_tokens:
         user_params.extend(['--warmup_tokens', config.warmup_tokens])
