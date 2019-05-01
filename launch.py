@@ -79,7 +79,7 @@ one_machine_fp16 = {
 # Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
 # logs: ben-txl-large-slow.01
 one_machine_fp16_large = {
-    'base_lr': 0.00025,  # from ben-big-lr.09
+    'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 1,
@@ -216,7 +216,7 @@ if __name__ == '__main__':
         '--mem_len', 384,
         '--eval_tgt_len', 128,
         '--batch_size', local_batch_size,  # per-gpu batch size # 128
-        '--eval_interval', 4000,
+        '--eval_interval', 1000,
     ]
 
     worker_params = ['--logdir', job.logdir,
