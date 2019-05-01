@@ -16,7 +16,6 @@ import torch
 import tqdm
 
 from data_utils import get_lm_corpus
-from mem_transformer import MemTransformerLM
 from utils.exp_utils import get_logger
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
@@ -45,7 +44,7 @@ parser.add_argument('--no_log', action='store_true',
 parser.add_argument('--same_length', action='store_true',
                     help='set same length attention with masking')
 parser.add_argument('--bpe', action='store_true', default=False,
-                    help="Use BPE instead of traditional vocabulary.")
+                    help='Use BPE instead of traditional vocabulary.')
 
 
 def evaluate(model, eval_iter, label):
@@ -76,7 +75,7 @@ def main():
     args = parser.parse_args()
     assert args.ext_len >= 0, 'extended context length must be non-negative'
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Get logger
     logging = get_logger(os.path.join(args.work_dir, 'eval-log.txt'),
@@ -89,6 +88,9 @@ def main():
     # Load the best saved model.
     with open(os.path.join(args.work_dir, 'model-best.pt'), 'rb') as f:
         model = torch.load(f)
+
+    model_tokens = model.n_token if hasattr(model, 'n_token') else model.module.n_token
+    assert model_tokens == ntokens, 'vocab size mismatch, did you mean `--bpe`?'
     model = model.to(device)
 
     logging('Evaluating with bsz {} tgt_len {} ext_len {} mem_len {} clamp_len {}'.format(
