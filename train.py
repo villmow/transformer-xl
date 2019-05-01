@@ -344,7 +344,10 @@ cutoffs, tie_projs = [], [False]
 if args.adaptive:
     assert args.dataset in ['wt103', 'lm1b', 'wt2']
     if args.dataset == 'wt103' or args.dataset == 'wt2':
-        cutoffs = [20000, 40000, 200000]
+        if args.bpe:
+            cutoffs = [5000, 10000, 40000]
+        else:
+            cutoffs = [20000, 40000, 200000]
         tie_projs += [True] * len(cutoffs)
     elif args.dataset == 'lm1b':
         cutoffs = [60000, 100000, 640000]
@@ -631,7 +634,7 @@ def main():
     log_tb('sizes/params', n_all_param)
     n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
     log_tb('sizes/non_emb_params', n_nonemb_param)
-
+    logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
     # optimizer
     if args.optim.lower() == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.mom)
