@@ -5,8 +5,6 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-
-
 def toscalar(t):  # use on python scalars/pytorch scalars
     """Converts Python scalar or PyTorch tensor to Python scalar"""
     if isinstance(t, (float, int)): return t

@@ -127,6 +127,7 @@ parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
 
+# todo(y): replace work_dir with logdir
 parser.add_argument('--work_dir', default=None, type=str,
                     help='Experiment directory. Defaults to logdir')
 parser.add_argument('--restart', action='store_true',
@@ -197,6 +198,8 @@ event_writer = util.NoOp()
 logdir = None
 epoch = 0
 train_step = 0
+optimizer = None
+scheduler = None
 
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
@@ -320,7 +323,7 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(args.seed)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-# device = 'cpu'
+
 ###############################################################################
 # Load data
 ###############################################################################
@@ -402,109 +405,6 @@ def weights_init(m):
             init_bias(m.r_bias)
 
 
-model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
-                         args.d_head, args.d_inner, args.dropout, args.dropatt,
-                         tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-                         tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-                         ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
-                         same_length=args.same_length, attn_type=args.attn_type,
-                         clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
-
-# todo(y): only initialize on rank0
-model.apply(weights_init)
-model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
-args.n_all_param = sum([p.nelement() for p in model.parameters()])
-args.n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
-
-if args.fp16:
-    model = FP16_Module(model)
-
-model = model.to(device)
-
-# optimizer
-optimizer_sparse = None
-if args.optim.lower() == 'sgd':
-    if args.sample_softmax > 0:
-        dense_params, sparse_params = [], []
-        for param in model.parameters():
-            if param.size() == model.word_emb.weight.size():
-                sparse_params.append(param)
-            else:
-                dense_params.append(param)
-        optimizer_sparse = optim.SGD(sparse_params, lr=args.lr * 2)
-        optimizer = optim.SGD(dense_params, lr=args.lr, momentum=args.mom)
-    else:
-        optimizer = optim.SGD(model.parameters(), lr=args.lr,
-                              momentum=args.mom)
-elif args.optim.lower() == 'lamb':
-    optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
-else:
-    assert args.optim.lower() == 'adam'
-    if args.sample_softmax > 0:
-        dense_params, sparse_params = [], []
-        for param in model.parameters():
-            if param.size() == model.word_emb.weight.size():
-                sparse_params.append(param)
-            else:
-                dense_params.append(param)
-        optimizer_sparse = optim.SparseAdam(sparse_params, lr=args.lr)
-        optimizer = optim.Adam(dense_params, lr=args.lr, weight_decay=args.wd)
-    else:
-        # TODO(b): try , betas=(0.9, 0.99))
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-
-# scheduler
-if args.scheduler == 'cosine':
-    # here we do not set eta_min to lr_min to be backward compatible
-    # because in previous versions eta_min is default to 0
-    # rather than the default value of lr_min 1e-6
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                     args.max_tokens, eta_min=args.eta_min)  # should use eta_min arg
-    if args.sample_softmax > 0:
-        scheduler_sparse = optim.lr_scheduler.CosineAnnealingLR(optimizer_sparse,
-                                                                args.max_tokens,
-                                                                eta_min=args.eta_min)  # should use eta_min arg
-elif args.scheduler == 'finder':
-    scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
-elif args.scheduler == 'inv_sqrt':
-    # originally used for Transformer (in Attention is all you need)
-    def lr_lambda(step):
-        # return a multiplier instead of a learning rate
-        if step == 0 and args.warmup_tokens == 0:
-            return 1.
-        else:
-            return 1. / (step ** 0.5) if step > args.warmup_tokens \
-                else step / (args.warmup_tokens ** 1.5)
-
-
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-elif args.scheduler == 'dev_perf':
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-                                                     factor=args.decay_rate, patience=args.patience, min_lr=args.lr_min)
-    if args.sample_softmax > 0:
-        scheduler_sparse = optim.lr_scheduler.ReduceLROnPlateau(optimizer_sparse,
-                                                                factor=args.decay_rate, patience=args.patience,
-                                                                min_lr=args.lr_min)
-elif args.scheduler == 'constant':
-    pass
-
-if args.fp16:
-    # If args.dynamic_loss_scale is False, static_loss_scale will be used.
-    # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
-    optimizer = FP16_Optimizer(optimizer,
-                               static_loss_scale=args.static_loss_scale,
-                               dynamic_loss_scale=args.dynamic_loss_scale,
-                               dynamic_loss_args={'init_scale': 2 ** 16},
-                               verbose=True)
-
-if args.restart:
-    if os.path.exists(os.path.join(args.restart_dir, 'optimizer.pt')):
-        with open(os.path.join(args.restart_dir, 'optimizer.pt'), 'rb') as f:
-            opt_state_dict = torch.load(f)
-            optimizer.load_state_dict(opt_state_dict)
-    else:
-        print('Optimizer was not saved. Start from scratch.')
-
 # todo(y): move into main()
 logger.info("Torch version: {}".format(torch.__version__))
 logger.info('=' * 100)
@@ -569,15 +469,12 @@ def evaluate(eval_iter):
 
 def train():
     global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, \
-        log_start_time, train_step, last_log_step, epoch
+        log_start_time, train_step, last_log_step, epoch, optimizer, scheduler
     # Turn on training mode which enables dropout.
     model.train()
 
     log_tb('sizes/batch_size', args.batch_size)
     log_tb('sizes/seq_size', args.tgt_len)
-
-    log_tb('sizes/params', args.n_all_param)
-    log_tb('sizes/non_emb_params', args.n_nonemb_param)
 
     mems = tuple()
     train_iter = tr_iter.get_varlen_iter() if args.varlen else tr_iter
@@ -615,8 +512,6 @@ def train():
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
         optimizer.step()
-        if args.sample_softmax > 0:
-            optimizer_sparse.step()
 
         # step-wise learning rate annealing
         train_step += 1
@@ -627,13 +522,9 @@ def train():
                 if global_token_count < args.warmup_tokens:
                     curr_lr = args.lr * global_token_count / args.warmup_tokens
                     optimizer.param_groups[0]['lr'] = curr_lr
-                    if args.sample_softmax > 0:
-                        optimizer_sparse.param_groups[0]['lr'] = curr_lr * 2
                 else:
                     if args.scheduler == 'cosine':
                         scheduler.step(global_token_count)
-                        if args.sample_softmax > 0:
-                            scheduler_sparse.step(global_token_count)
             else:
                 scheduler.step(global_token_count)
         else:
@@ -722,7 +613,7 @@ def train():
 
 def main():
     global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, \
-        best_val_loss, eval_start_time, log_start_time, epoch, model
+        best_val_loss, eval_start_time, log_start_time, epoch, model, optimizer, scheduler
 
     if args.local_rank > 0:
         pass  # skip shutdown when rank is explicitly set + not zero rank
@@ -738,12 +629,66 @@ def main():
     assert (util.get_world_size() == dist.get_world_size())
     logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
 
-    model = DistributedDataParallel(model,
-                                    device_ids=[args.local_rank],
-                                    output_device=args.local_rank)
+    model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
+                             args.d_head, args.d_inner, args.dropout, args.dropatt,
+                             tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+                             tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+                             ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
+                             same_length=args.same_length, attn_type=args.attn_type,
+                             clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+
+    # log model info
+    n_all_param = sum([p.nelement() for p in model.parameters()])
+    log_tb('sizes/params', n_all_param)
+    n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
+    log_tb('sizes/non_emb_params', n_nonemb_param)
+
+    # optimizer
+    if args.optim.lower() == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.mom)
+    elif args.optim.lower() == 'lamb':
+        optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    else:
+        assert args.optim.lower() == 'adam'
+        # TODO(b): try , betas=(0.9, 0.99))
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+
+    # scheduler
+    if args.scheduler == 'cosine':
+        # here we do not set eta_min to lr_min to be backward compatible
+        # because in previous versions eta_min is default to 0
+        # rather than the default value of lr_min 1e-6
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens, eta_min=args.eta_min)
+    elif args.scheduler == 'finder':
+        scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
+    elif args.scheduler == 'constant':
+        pass
+
+    if args.fp16:
+        model = FP16_Module(model)
+    model = model.to(device)
+
+    # todo(y): only if rank0
+    model.apply(weights_init)
+    model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+
+    model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
     if args.checkpoint:
         util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
+
+        # with open(os.path.join(args.restart_dir, 'optimizer.pt'), 'rb') as f:
+        #     opt_state_dict = torch.load(f)
+        #     optimizer.load_state_dict(opt_state_dict)
+
+    if args.fp16:
+        # If args.dynamic_loss_scale is False, static_loss_scale will be used.
+        # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
+        optimizer = FP16_Optimizer(optimizer,
+                                   static_loss_scale=args.static_loss_scale,
+                                   dynamic_loss_scale=args.dynamic_loss_scale,
+                                   dynamic_loss_args={'init_scale': 2 ** 16},
+                                   verbose=True)
 
     logdir = args.logdir
     assert os.path.exists(logdir)
