@@ -3,8 +3,11 @@ tqdm
 pytorch_pretrained_bert
 tensorboardX
 tensorflow  # needed for tensorboardX
-sacremoses
 git+https://github.com/cybertronai/pytorch-lamb
+# TODO: remove git repo when master is fixed.
+git+https://github.com/8enmann/pytorch-pretrained-BERT@patch-2
+#pytorch-pretrained-bert
+portalocker
 
 # ncluster subdependencies
 boto3

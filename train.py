@@ -155,7 +155,8 @@ parser.add_argument('--finetune_v3', action='store_true',
                     help='finetune v3')
 parser.add_argument('--num_gpu', type=int, default=1,
                     help="number of gpus (used to make sure # tokens is correct)")
-
+parser.add_argument('--bpe', action='store_true', default=False,
+                    help="Use BPE instead of traditional vocabulary.")
 parser.add_argument('--true_fp16', action='store_true', default=False,
                     help="Use true_fp16 as opposed to mixed precision")
 parser.add_argument('--fp16', action='store_true',
@@ -387,7 +388,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ###############################################################################
 # Load data
 ###############################################################################
-corpus = get_lm_corpus(args.data, args.dataset)
+corpus = get_lm_corpus(args.data, args.dataset), use_bpe=args.bpe)
 ntokens = len(corpus.vocab)
 args.n_token = ntokens
 
@@ -599,8 +600,6 @@ logger.info('=' * 100)
 for k, v in args.__dict__.items():
     logger.info('    - {} : {}'.format(k, v))
 logger.info('=' * 100)
-logger.info('#params = {}'.format(args.n_all_param))
-logger.info('#non emb params = {}'.format(args.n_nonemb_param))
 
 ###############################################################################
 # Training code

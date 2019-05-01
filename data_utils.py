@@ -1,13 +1,16 @@
-import os, sys
-import glob
+"""Data loading utilities."""
 
-from collections import Counter, OrderedDict
+import glob
+import os
+
 import numpy as np
+import portalocker
 import torch
 
-from utils.vocabulary import Vocab
+from utils.vocabulary import OpenAIVocab, Vocab
 
-class LMOrderedIterator(object):
+
+class LMOrderedIterator:
     def __init__(self, data, bsz, bptt, device='cpu', ext_len=None):
         """
             data -- LongTensor -- the LongTensor is strictly ordered
@@ -59,10 +62,11 @@ class LMOrderedIterator(object):
                 break
 
     def __iter__(self):
+        """Wrapper for get_fixlen_iter."""
         return self.get_fixlen_iter()
 
 
-class LMShuffledIterator(object):
+class LMShuffledIterator:
     def __init__(self, data, bsz, bptt, device='cpu', ext_len=None, shuffle=False):
         """
             data -- list[LongTensor] -- there is no order among the LongTensors
@@ -175,10 +179,13 @@ class LMMultiFileIterator(LMShuffledIterator):
                 yield batch
 
 
-class Corpus(object):
-    def __init__(self, path, dataset, *args, **kwargs):
+class Corpus:
+    def __init__(self, path, dataset, use_bpe, *args, **kwargs):
         self.dataset = dataset
-        self.vocab = Vocab(*args, **kwargs)
+        if use_bpe:
+            self.vocab = OpenAIVocab(kwargs['max_size'], kwargs.get('vocab_file'))
+        else:
+            self.vocab = Vocab(*args, **kwargs)
 
         if self.dataset in ['ptb', 'wt2', 'enwik8', 'text8']:
             self.vocab.count_file(os.path.join(path, 'train.txt'))
@@ -202,30 +209,31 @@ class Corpus(object):
                 os.path.join(path, 'train.txt'), ordered=True)
             self.valid = self.vocab.encode_file(
                 os.path.join(path, 'valid.txt'), ordered=True)
-            self.test  = self.vocab.encode_file(
+            self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=True)
         elif self.dataset in ['enwik8', 'text8']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'train.txt'), ordered=True, add_eos=False)
             self.valid = self.vocab.encode_file(
                 os.path.join(path, 'valid.txt'), ordered=True, add_eos=False)
-            self.test  = self.vocab.encode_file(
+            self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=True, add_eos=False)
         elif self.dataset == 'lm1b':
             self.train = train_paths
             self.valid = self.vocab.encode_file(
                 os.path.join(path, 'valid.txt'), ordered=False, add_double_eos=True)
-            self.test  = self.vocab.encode_file(
+            self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'wiki.train.tokens'), ordered=True, add_eos=False)
             self.valid = self.vocab.encode_file(
                 os.path.join(path, 'wiki.valid.tokens'), ordered=True, add_eos=False)
-            self.test  = self.vocab.encode_file(
+            self.test = self.vocab.encode_file(
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
 
     def get_dist_iterator(self, split, rank, max_rank, *args, **kwargs):
+        """Get an iterator that only operates on rank//max_rank independent subset of the data."""
         if self.dataset == 'lm1b':
             raise NotImplementedError('See get_iterator')
         data = self.__getattribute__(split)
@@ -233,6 +241,11 @@ class Corpus(object):
         return LMOrderedIterator(data[rank * chunk_size:(rank+1) * chunk_size], *args, **kwargs)
 
     def get_iterator(self, split, *args, **kwargs):
+        """Get an iterator over the corpus.
+
+        Each next() returns (data, target, seq_length).
+        data and target have shape (bptt, bsz) and seq_length is a scalar.
+        """
         data = self.__getattribute__(split)
         if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
             data_iter = LMOrderedIterator(data, *args, **kwargs)
@@ -245,14 +258,20 @@ class Corpus(object):
         return data_iter
 
 
-def get_lm_corpus(datadir, dataset):
-    fn = os.path.join(datadir, 'cache.pt')
-    if os.path.exists(fn):
+def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> Corpus:
+    """Factory method for Corpus.
+
+    Arguments:
+        datadir: Where does the data live?
+        dataset: eg 'wt103' which tells the Corpus how to parse the data.
+    """
+    cache_filepath = os.path.join(datadir, 'cache.pt.bpe' if use_bpe else 'cache.pt')
+    if os.path.exists(cache_filepath):
         print('Loading cached dataset...')
-        corpus = torch.load(fn)
+        corpus = torch.load(cache_filepath)
     else:
         print('Producing dataset {}...'.format(dataset))
-        kwargs = {}
+        kwargs = {'max_size': max_size}
         if dataset in ['wt103', 'wt2', 'wt103-normal']:
             kwargs['special'] = ['<eos>']
             kwargs['lower_case'] = False
@@ -266,12 +285,14 @@ def get_lm_corpus(datadir, dataset):
         elif dataset in ['enwik8', 'text8']:
             pass
 
-        corpus = Corpus(datadir, dataset, **kwargs)
-        torch.save(corpus, fn)
+        corpus = Corpus(datadir, dataset, use_bpe, **kwargs)
+        portalocker.lock(cache_filepath, portalocker.LOCK_EX)
+        torch.save(corpus, cache_filepath)
+        portalocker.unlock(cache_filepath)
 
     return corpus
 
-if __name__ == '__main__':
+def main():
     import argparse
     parser = argparse.ArgumentParser(description='unit test')
     parser.add_argument('--datadir', type=str, default='../data/text8',
@@ -281,9 +302,12 @@ if __name__ == '__main__':
                         help='dataset name')
     args = parser.parse_args()
 
-    corpus = get_lm_corpus(args.datadir, args.dataset)
-    print('Vocab size : {}'.format(len(corpus.vocab.idx2sym)))
+    corpus = get_lm_corpus(args.datadir, args.dataset, use_bpe=True)
+    print(f'Vocab size : {len(corpus.vocab)}')
     #tr_iter = corpus.get_iterator('train', 16, 150, 'cpu', ext_len=0)
     tr_iter = corpus.get_dist_iterator('train', rank=0, max_rank=10, bsz=16, bptt=150, device='cpu', ext_len=0)
-    x,y,l = next(iter(tr_iter))
-    print(x.shape)
+    data, target, seq_len = next(iter(tr_iter))
+    print(data.shape, target.shape, seq_len, len(list(tr_iter)))
+
+if __name__ == '__main__':
+    main()

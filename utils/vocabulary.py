@@ -1,9 +1,12 @@
+import contextlib
 import os
 from collections import Counter, OrderedDict
 
+import portalocker
 import torch
 
-class Vocab(object):
+
+class Vocab:
     def __init__(self, special=[], min_freq=0, max_size=None, lower_case=True,
                  delimiter=None, vocab_file=None):
         self.counter = Counter()
@@ -34,7 +37,9 @@ class Vocab(object):
             return symbols
 
     def count_file(self, path, verbose=False, add_eos=False):
-        if verbose: print('counting file {} ...'.format(path))
+        """Update self.counter with tokenized symbol counts."""
+        if verbose: 
+            print(f'counting file {path} ...')
         assert os.path.exists(path), f"{path} doesn't exist"
 
         sents = []
@@ -89,9 +94,10 @@ class Vocab(object):
             print('final vocab size {} from {} unique tokens'.format(
                 len(self), len(self.counter)))
 
-    def encode_file(self, path, ordered=False, verbose=False, add_eos=True,
-            add_double_eos=False):
-        if verbose: print('encoding file {} ...'.format(path))
+    def encode_file(self, path: str, ordered=False, verbose=False, add_eos=True,
+            add_double_eos=False) -> torch.LongTensor:
+        if verbose: 
+            print(f'encoding file {path} ...')
         assert os.path.exists(path), f"{path} doesn't exist"
         encoded = []
         with open(path, 'r', encoding='utf-8') as f:
@@ -161,3 +167,64 @@ class Vocab(object):
 
     def __len__(self):
         return len(self.idx2sym)
+
+class OpenAIVocab(Vocab):
+    def __init__(self, max_size, vocab_file=None):
+        from pytorch_pretrained_bert import GPT2Tokenizer
+        self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        self.EOT = self.tokenizer.encoder['<|endoftext|>']
+        self.max_size = max_size
+        self.vocab_file = vocab_file
+
+    def __len__(self):
+        return len(self.tokenizer)
+
+    def count_file(self, path, verbose=False, add_eos=False):
+        # TODO: train from scratch, respect self.max_size
+        pass
+
+    def build_vocab(self):
+        pass
+
+    def encode_file(self, path, ordered=False, verbose=False, add_eos=True, add_double_eos=False) -> torch.LongTensor:
+        cached = path + '.tokenized'
+        if os.path.exists(cached):
+            print('found cache')
+            return torch.load(cached)
+        print(f'encoding file {path} ...')
+        assert os.path.exists(path), f"{path} doesn't exist"
+
+        with open(path, encoding='utf-8') as f:
+            # Suppress warnings about length.
+            with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
+                out = torch.LongTensor(self.tokenizer.encode(f.read()) + [self.EOT])
+                portalocker.lock(cached, portalocker.LOCK_EX)
+                torch.save(out, cached)
+                portalocker.unlock(cached)
+                return out
+
+
+class GoogleBPEVocab(Vocab):
+    """Don't use this until this issue is fixed.
+
+    https://github.com/google/sentencepiece/issues/318
+    """
+    def __init__(self, max_size, vocab_file=None):
+        import sentencepiece as spm
+        self.spm = spm
+        self.max_size = max_size
+        self.vocab_file = vocab_file
+        self.sp = spm.SentencePieceProcessor()
+    def count_file(self, path, verbose=False, add_eos=False):
+        self.spm.SentencePieceTrainer.Train(
+            f'--input={self.vocab_file} --model_prefix=m --vocab_size={self.max_size} --model_type=bpe')
+
+    def build_vocab(self):
+        if self.vocab_file:
+            self.sp.Load(self.vocab_file)
+        else:
+            pass
+
+    def encode_file(self, path, ordered=False, verbose=False, add_eos=True, add_double_eos=False) -> torch.LongTensor:
+        with open(path, encoding='utf-8') as f:
+            return torch.LongTensor(self.sp.EncodeAsIds(f.read()))
