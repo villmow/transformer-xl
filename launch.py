@@ -207,10 +207,11 @@ if __name__ == '__main__':
         '--d_inner', 4096,
         '--dropout', 0.2,
         '--dropatt', 0.2,
-        '--optim', 'lamb',
+        '--optim', 'adam',
         '--lr', lr,
         '--wd', 0,
-        '--max_tokens', int(1.8e10), # 20x
+        '--warmup_tokens', int(1.8e10/250),
+        '--max_tokens', int(1.8e9 * 20), # 20x
         '--tgt_len', 384,
         '--mem_len', 384,
         '--eval_tgt_len', 128,
@@ -227,10 +228,10 @@ if __name__ == '__main__':
     if args.checkpoint_each_epoch:
         user_params.extend(['--checkpoint_each_epoch', args.checkpoint_each_epoch])
 
-    if args.checkpoint or config.checkpoint:
+    if args.checkpoint or (hasattr(config, 'checkpoint') and config.checkpoint):
         user_params.extend(['--checkpoint', util.one_of([args.checkpoint, config.checkpoint])])
 
-    if config.warmup_tokens:
+    if hasattr(config, 'warmup_tokens') and config.warmup_tokens:
         user_params.extend(['--warmup_tokens', config.warmup_tokens])
         
 
