@@ -422,25 +422,17 @@ def evaluate(eval_iter):
     # Turn on evaluation mode which disables dropout.
     model.eval()
 
+    # Have to unwrap twice: DDP & FP16
+    model_to_reset = model.module.module if args.fp16 else args.module
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
-
-    if args.fp16:
-        if args.mem_len == 0:
-            # Have to unwrap twice: DDP & FP16
-            model.module.module.reset_length(args.eval_tgt_len,
-                                             args.ext_len + args.tgt_len - args.eval_tgt_len, args.mem_len)
-        else:
-            model.module.module.reset_length(args.eval_tgt_len,
-                                             args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
+    if args.mem_len == 0:
+        model_to_reset.reset_length(
+            args.eval_tgt_len, args.ext_len + args.tgt_len - args.eval_tgt_len, args.mem_len)
     else:
-        if args.mem_len == 0:
-            model.module.reset_length(args.eval_tgt_len,
-                                      args.ext_len + args.tgt_len - args.eval_tgt_len, args.mem_len)
-        else:
-            model.module.reset_length(args.eval_tgt_len,
-                                      args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
-
+        model_to_reset.reset_length(
+            args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
+  
     # Evaluation
     total_len, total_loss = 0, 0.
     with torch.no_grad():
@@ -458,18 +450,15 @@ def evaluate(eval_iter):
             total_len += seq_len
 
     # Switch back to the training mode
-    if args.fp16:
-        model.module.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
-    else:
-        model.module.reset_length(args.tgt_len, args.ext_len, args.mem_len)
+    model_to_reset.reset_length(args.tgt_len, args.ext_len, args.mem_len)
     model.train()
 
     return total_loss / total_len
 
 
 def train():
-    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, eval_start_time, \
-        log_start_time, train_step, last_log_step, epoch, optimizer, scheduler
+    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, \
+        train_step, last_log_step, epoch, optimizer, scheduler
     # Turn on training mode which enables dropout.
     model.train()
 
@@ -576,6 +565,7 @@ def train():
             last_log_step = train_step
 
         if train_step % args.eval_interval == 0:
+            eval_start_time = time.time()
             val_loss = evaluate(va_iter)
             if not best_val_loss or val_loss < best_val_loss:
                 if not args.debug:
@@ -598,7 +588,6 @@ def train():
             log_tb('loss/val_loss', val_loss)
             log_tb('loss/val_ppl', math.exp(val_loss))
 
-            eval_start_time = time.time()
 
         # TODO: instead of stopping training, transition to constant small LR forever
         if global_token_count >= args.max_tokens:
@@ -613,7 +602,7 @@ def train():
 
 def main():
     global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, \
-        best_val_loss, eval_start_time, log_start_time, epoch, model, optimizer, scheduler
+        best_val_loss, epoch, model, optimizer, scheduler
 
     if args.local_rank > 0:
         pass  # skip shutdown when rank is explicitly set + not zero rank
@@ -717,9 +706,6 @@ def main():
     last_log_step = 0
     best_val_loss = None
 
-    log_start_time = time.time()
-    eval_start_time = time.time()
-
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in itertools.count(start=1):
@@ -732,7 +718,7 @@ def main():
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
-    model_file = os.path.join(args.work_dir, 'model.pt')
+    model_file = os.path.join(args.work_dir, 'model-best.pt')
     if os.path.exists(model_file):
         with open(model_file, 'rb') as model_f:
             with timeit('load'):
