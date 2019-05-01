@@ -3,7 +3,8 @@ import sys
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel
+import torch.nn.parallel as torch_parallel
+
 
 def toscalar(t):  # use on python scalars/pytorch scalars
     """Converts Python scalar or PyTorch tensor to Python scalar"""
@@ -58,14 +59,18 @@ class NoOp:
         return no_op
 
 
-def dist_restore_from_checkpoint(ddp_model: DistributedDataParallel, checkpoint_fn: str):
+def dist_restore_from_checkpoint(ddp_model, checkpoint_fn: str, force_fp16=False):
     """Restores model wrapped in DistributedDataParallel from checkpoint file. Assumes checkpoint was saved
     as torch.save(ddp.module) or distributed_save_checkpoint
     """
 
     if get_global_rank() == 0:
         saved_model = torch.load(checkpoint_fn)
-        ddp_model.module.load_state_dict(saved_model.state_dict())
+        state_dict = saved_model.state_dict()
+        if force_fp16:
+            for name in state_dict:
+                state_dict[name] = state_dict[name].half()
+        ddp_model.module.load_state_dict(state_dict)
 
     pp = next(ddp_model.module.parameters())
     print(f"{get_global_rank()}  -- Before broadcast {pp.view(-1)[0]}")
@@ -75,7 +80,20 @@ def dist_restore_from_checkpoint(ddp_model: DistributedDataParallel, checkpoint_
     print(f"{get_global_rank()}  -- After broadcast {pp.view(-1)[0]}")
 
 
-def dist_save_checkpoint(ddp_model: DistributedDataParallel, optimizer_, directory: str, suffix=''):
+def restore_from_checkpoint(model, checkpoint_fn: str, force_fp16=False):
+    """Restores model wrapped in DistributedDataParallel from checkpoint file. Assumes checkpoint was saved
+    as torch.save(ddp.module) or distributed_save_checkpoint
+    """
+
+    saved_model = torch.load(checkpoint_fn)
+    state_dict = saved_model.state_dict()
+    if force_fp16:
+        for name in state_dict:
+            state_dict[name] = state_dict[name].half()
+    model.load_state_dict(state_dict)
+
+
+def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
     """Saves model/optimizer into {directory}/optimizer-{suffix}.py and {directory}/model-{suffix}.pt"""
     if get_global_rank() != 0:
         return

@@ -664,32 +664,39 @@ def main():
     elif args.scheduler == 'constant':
         pass
 
-    if args.fp16:
-        model = FP16_Module(model)
-    model = model.to(device)
-
     # todo(y): only if rank0
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
-    model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
     if args.checkpoint:
-        util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
+        #        util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
+        if global_rank == 0:
+            util.restore_from_checkpoint(model=model, checkpoint_fn=args.checkpoint)
 
         # with open(os.path.join(args.restart_dir, 'optimizer.pt'), 'rb') as f:
         #     opt_state_dict = torch.load(f)
         #     optimizer.load_state_dict(opt_state_dict)
 
+    
     if args.fp16:
         # If args.dynamic_loss_scale is False, static_loss_scale will be used.
+        model = FP16_Module(model)
+
+    model = model.to(device)
+    if args.fp16:
         # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
         optimizer = FP16_Optimizer(optimizer,
                                    static_loss_scale=args.static_loss_scale,
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=True)
+    model = model.to(device)
 
+    #    model = util.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+    model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+
+                                          
     logdir = args.logdir
     assert os.path.exists(logdir)
 
