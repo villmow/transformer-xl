@@ -38,7 +38,7 @@ parser.add_argument('--run_name', type=str, default='txl', help="name of run")
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2'],
+                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki'],
                     help='dataset name')
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
@@ -340,8 +340,8 @@ tr_iter, va_iter, te_iter = [
 # adaptive softmax / embedding
 cutoffs, tie_projs = [], [False]
 if args.adaptive:
-    assert args.dataset in ['wt103', 'lm1b', 'wt2']
-    if args.dataset == 'wt103' or args.dataset == 'wt2':
+    assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki']
+    if args.dataset in ('wt103', 'wt2', 'wiki'):
         if args.bpe:
             cutoffs = [5000, 10000, 40000]
         else:
@@ -456,6 +456,7 @@ def evaluate(eval_iter, split, train_step=-1):
     model_to_reset.reset_length(args.tgt_len, args.ext_len, args.mem_len)
     model.train()
 
+    # Log all the things.
     mean_loss = total_loss / total_len
     logger.info('-' * 100)
     log_str = (f'| Eval {train_step // args.eval_interval:3d} at step {train_step:>8d} | ' +
@@ -470,6 +471,7 @@ def evaluate(eval_iter, split, train_step=-1):
     log_tb(f'loss/{split}_loss', mean_loss)
     log_tb(f'loss/{split}_ppl', math.exp(mean_loss))
 
+    # Update checkpoint if validation loss improved.
     if split == 'val' and  (not best_val_loss or mean_loss < best_val_loss):
         if not args.debug:
             logger.info('Saving checkpoint for new best loss')

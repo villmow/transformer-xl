@@ -164,9 +164,11 @@ class LMMultiFileIterator(LMShuffledIterator):
         sents = self.vocab.encode_file(path, add_double_eos=True)
         if self.shuffle:
             np.random.shuffle(sents)
-        sent_stream = iter(sents)
-
-        return sent_stream
+        # Create virtual sentences for wikipedia data.
+        # TODO: Load a few files at a time, then chunk?
+        if type(sents) == torch.Tensor:
+            return iter(sents.split(len(sents) // self.bsz))
+        return iter(sents)
 
     def __iter__(self):
         if self.shuffle:
@@ -200,8 +202,12 @@ class Corpus:
                 path, '1-billion-word-language-modeling-benchmark-r13output',
                 'training-monolingual.tokenized.shuffled', 'news.en-*')
             train_paths = glob.glob(train_path_pattern)
-            # the vocab will load from file when build_vocab() is called
+        elif self.dataset == 'wiki':
+            file_path_pattern = os.path.join(path, '*/wiki_*.txt')
+            file_paths = glob.glob(file_path_pattern)
+            assert file_paths, f'Nothing found at {file_path_pattern}' 
 
+        # the vocab will load from file when build_vocab() is called
         self.vocab.build_vocab()
 
         if self.dataset in ['ptb', 'wt2', 'wt103']:
@@ -224,6 +230,11 @@ class Corpus:
                 os.path.join(path, 'valid.txt'), ordered=False, add_double_eos=True)
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
+        elif self.dataset == 'wiki':
+            # Take the first and second file of each alphabetical directory for train and test.
+            self.valid = [x for x in file_paths if x.endswith('00.txt')]
+            self.test = [x for x in file_paths if x.endswith('01.txt')]
+            self.train = list(set(file_paths) - set(self.valid) - set(self.test))
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'wiki.train.tokens'), ordered=True, add_eos=False)
@@ -234,11 +245,12 @@ class Corpus:
 
     def get_dist_iterator(self, split, rank, max_rank, *args, **kwargs):
         """Get an iterator that only operates on rank//max_rank independent subset of the data."""
-        if self.dataset == 'lm1b':
-            raise NotImplementedError('See get_iterator')
         data = self.__getattribute__(split)
-        chunk_size = data.size(0) // max_rank
-        return LMOrderedIterator(data[rank * chunk_size:(rank+1) * chunk_size], *args, **kwargs)
+        subset = list(chunk(data, max_rank))[rank]
+        if self.dataset in ['lm1b', 'wiki']:
+            return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
+        
+        return LMOrderedIterator(subset, *args, **kwargs)
 
     def get_iterator(self, split, *args, **kwargs):
         """Get an iterator over the corpus.
@@ -248,14 +260,15 @@ class Corpus:
         """
         data = self.__getattribute__(split)
         if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
-            data_iter = LMOrderedIterator(data, *args, **kwargs)
+            return LMOrderedIterator(data, *args, **kwargs)
         elif self.dataset == 'lm1b':
             if split in ['valid', 'test']:
-                data_iter = LMShuffledIterator(data, *args, **kwargs)
+                return LMShuffledIterator(data, *args, **kwargs)
             else:
                 kwargs['shuffle'] = True
-                data_iter = LMMultiFileIterator(self.train, self.vocab, *args, **kwargs)
-        return data_iter
+                return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
+        elif self.dataset == 'wiki':
+            return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
 
 
 def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> Corpus:
@@ -286,11 +299,18 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
             pass
 
         corpus = Corpus(datadir, dataset, use_bpe, **kwargs)
-        portalocker.lock(cache_filepath, portalocker.LOCK_EX)
-        torch.save(corpus, cache_filepath)
-        portalocker.unlock(cache_filepath)
+        with portalocker.Lock(cache_filepath, timeout=60) as _:
+            torch.save(corpus, cache_filepath)
 
     return corpus
+
+def chunk(a: list, n: int):
+    """Split `a` into `n` chunks, with the last bucket taking the remaining.
+    
+    https://stackoverflow.com/a/2135920
+    """
+    k, m = divmod(len(a), n)
+    return (a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
 
 def main():
     import argparse
@@ -298,7 +318,7 @@ def main():
     parser.add_argument('--datadir', type=str, default='../data/text8',
                         help='location of the data corpus')
     parser.add_argument('--dataset', type=str, default='text8',
-                        choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal'],
+                        choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal', 'wiki'],
                         help='dataset name')
     args = parser.parse_args()
 
@@ -306,8 +326,9 @@ def main():
     print(f'Vocab size : {len(corpus.vocab)}')
     #tr_iter = corpus.get_iterator('train', 16, 150, 'cpu', ext_len=0)
     tr_iter = corpus.get_dist_iterator('train', rank=0, max_rank=10, bsz=16, bptt=150, device='cpu', ext_len=0)
-    data, target, seq_len = next(iter(tr_iter))
-    print(data.shape, target.shape, seq_len, len(list(tr_iter)))
+    for data, target, seq_len in tr_iter:
+        print(data.shape, target.shape, seq_len, len(list(tr_iter)))
+        break
 
 if __name__ == '__main__':
     main()
