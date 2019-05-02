@@ -72,7 +72,10 @@ one_machine_fp16 = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
@@ -83,11 +86,7 @@ one_machine_fp16_large = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 1,
-    'extra_worker_params': [
-        '--fp16', '--dynamic_loss_scale', '--bpe',
-        '--init_std', 0.005,
-        '--div_val', 1
-    ]
+    'large': True,
 }
 
 # fork of one_machine_fp16_large
@@ -96,11 +95,7 @@ one_machine_fp16_large_four = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 4,
-    'extra_worker_params': [
-        '--fp16', '--dynamic_loss_scale', '--bpe',
-        '--init_std', 0.005,
-        '--div_val', 1
-    ]
+    'large': True,
 }
 
 one_machine_fp16_large_eight = {
@@ -108,11 +103,7 @@ one_machine_fp16_large_eight = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 8,
-    'extra_worker_params': [
-        '--fp16', '--dynamic_loss_scale', '--bpe',
-        '--init_std', 0.005,
-        '--div_val', 1
-    ]
+    'large': True,
 }
 
 # /ncluster/runs.new/yaro-fp16.09
@@ -121,7 +112,10 @@ one_machine_fp16_2xlr = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 # /ncluster/runs.new/yaro-fp16.10
@@ -130,7 +124,10 @@ one_machine_fp16_4xlr = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 # /ncluster/runs.new/yaro-fp16.11
@@ -140,7 +137,10 @@ one_machine_fp16_8xlr = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 # smaller p3.16 machine, logs: ben-bpe
@@ -149,7 +149,10 @@ one_machine_fp16_small = {
     'instance_type': 'p3.16xlarge',
     'local_batch_size': 96 // 2,
     'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 one_machine_fp16_checkpoint = {
@@ -158,7 +161,10 @@ one_machine_fp16_checkpoint = {
     'local_batch_size': 96,
     'machines': 1,
     'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 
@@ -168,7 +174,10 @@ two_machines_fp16 = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 2,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 two_machines = {
@@ -185,7 +194,10 @@ four_machines = {
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 4,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 eight_machines = {
@@ -194,9 +206,62 @@ eight_machines = {
     'local_batch_size': 96,
     'machines': 8,
     'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--warmup_tokens', 50e6]
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+        'warmup_tokens': 50e6,
+    }
 }
 
+def dict_to_args(dict_: dict):
+    def item_to_arg(item: tuple):
+        k, v = item
+        if v is False or v is None:
+            return ''
+        if v is True:
+            return f'--{k}'
+        return f'--{k} {v}'
+        
+    return ' '.join([item_to_arg(item) for item in dict_.items()])
+
+# Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
+LARGE_ARGS = {
+    'n_layer': 18,
+    'd_model': 1024,
+    'n_head': 16,
+    'd_head': 64,
+    'd_inner': 4096,
+    'dropout': 0.2,
+    'dropatt': 0.2,
+    'optim': 'lamb',
+    'warmup_tokens': 0,
+    'max_tokens': int(1.8e9 * 20),
+    'tgt_len': 384,
+    'mem_len': 384,
+    'eval_tgt_len': 128,
+    'fp16': True,
+    'dynamic_loss_scale': True,
+    'bpe': True,
+    'init_std': 0.005,
+    'div_val': 1,
+}
+
+# Roughly match https://github.com/kimiyoung/transformer-xl/blob/master/pytorch/run_wt103_base.sh
+# Divisible by 8 for fp16 compatibility.
+SMALL_ARGS = {
+    'n_layer': 16,
+    'd_model': 512,
+    'n_head': 8,
+    'd_head': 48,
+    'd_inner': 2048,
+    'dropout': 0.1,
+    'dropatt': 0.0,
+    'optim': 'lamb',
+    'max_tokens': int(1.8e9),
+    'tgt_len': 128,
+    'mem_len': 128,
+    'eval_tgt_len': 128,
+}
 
 def _get_nccl_params():
     params = f'NCCL_DEBUG=VERSION '
@@ -206,7 +271,7 @@ def _get_nccl_params():
     return params
 
 
-if __name__ == '__main__':
+def main():
     ncluster.set_backend('aws')
     ncluster.set_logdir_root('/ncluster/runs.new')  # TODO(y): /ncluster/runs
 
@@ -225,7 +290,7 @@ if __name__ == '__main__':
                   'instance_type': args.instance_type,
                   'machines': args.machines}
 
-    config = AttrDefault(str, config)     # easier access to dictionary entries
+    config = AttrDefault(lambda: None, config)  # easier access to dictionary entries
     config.image_name = IMAGE_NAME
     config.conda_env = CONDA_ENV
 
@@ -252,10 +317,6 @@ if __name__ == '__main__':
             f'source activate {config.conda_env} && ' +
             f'pip install -r requirements.txt')
 
-    # Training script args
-    default_params = [
-    ]
-
     local_batch_size = config.local_batch_size
     base_lr = config.base_lr
 
@@ -267,54 +328,36 @@ if __name__ == '__main__':
     lr = base_lr * (global_batch_size / BASE_LR_BATCHSIZE)
 
     # worker parameters with training setup
-    training_params = [
-        '--seed', 1111,
-        '--data', '/ncluster/data/transformer-xl-data/wikitext-103',
-        '--dataset', 'wt103',
-        '--adaptive',
-        '--log_interval', 100,
-        '--n_layer', 18,
-        '--d_model', 1024,
-        '--n_head', 16,
-        '--d_head', 64,
-        '--d_inner', 4096,
-        '--dropout', 0.2,
-        '--dropatt', 0.2,
-        '--optim', 'adam',
-        '--lr', lr,
-        '--wd', 0,
-        '--warmup_tokens', int(1.8e10/250),
-        '--max_tokens', int(1.8e9 * 20), # 20x
-        '--tgt_len', 384,
-        '--mem_len', 384,
-        '--eval_tgt_len', 128,
-        '--batch_size', local_batch_size,  # per-gpu batch size # 128
-        '--eval_interval', 1000,
-    ]
+    worker_params = {
+        'seed': 1111,
+        'data': '/ncluster/data/transformer-xl-data/wikitext-103',
+        'dataset': 'wt103',
+        'adaptive': True,
+        'log_interval': 100,
+        'eval_interval': 1000,
+        'logdir': job.logdir,
+        'distributed': True,
+        'lr': lr,
+        'batch_size': local_batch_size,
+    }
+    
+    worker_params.update(LARGE_ARGS if config.large else SMALL_ARGS)
 
-    worker_params = ['--logdir', job.logdir,
-                     '--distributed']
-    worker_params.extend(training_params)
-
-    user_params = []
+    user_params = {}
     # pass through some user-provided settings that were arguments to the launcher script
     if args.checkpoint_each_epoch:
-        user_params.extend(['--checkpoint_each_epoch', args.checkpoint_each_epoch])
+        user_params['checkpoint_each_epoch'] = args.checkpoint_each_epoch
+    if config.warmup_tokens:
+        user_params['warmup_tokens'] = config.warmup_tokens
 
     if args.checkpoint or config.checkpoint:
-        user_params.extend(['--checkpoint',
-                            util.one_of([args.checkpoint, config.checkpoint])])
+        user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
 
-    if hasattr(config, 'warmup_tokens') and config.warmup_tokens:
-        user_params.extend(['--warmup_tokens', config.warmup_tokens])
-        
-
-    worker_params.extend(user_params)
+    worker_params.update(user_params)
 
     if 'extra_worker_params' in config:
-        worker_params.extend(config.extra_worker_params)
+        worker_params.update(config.extra_worker_params)
 
-    worker_params = ' '.join(str(p) for p in worker_params)
     nccl_params = _get_nccl_params()
 
     for i, task in enumerate(job.tasks):
@@ -322,8 +365,11 @@ if __name__ == '__main__':
             f'--nproc_per_node={num_gpus_per_machine} ' \
             f'--nnodes={config.machines} --node_rank={i} ' \
             f'--master_addr={job.tasks[0].ip} --master_port={6016}'
-        cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} train.py {worker_params}'
+        cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} train.py {dict_to_args(worker_params)}'
         task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
         task.run(cmd, non_blocking=True)
 
     print(f"Logging to {job.logdir}")
+
+if __name__ == '__main__':
+    main()
