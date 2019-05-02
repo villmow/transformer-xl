@@ -30,23 +30,19 @@ parser.add_argument('--instance_type', type=str, default='',
                     help="how many machines to use")
 parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
                     help='whether to save checkpoint at each epoch')
-parser.add_argument('--image_name', type=str, default='',
+parser.add_argument('--image_name', type=str, default='reference03',
                     help="use custom AMI ")
-parser.add_argument('--conda_env', type=str, default='',
+parser.add_argument('--conda_env', type=str, default='pytorch_p36',
                     help='use custom conda env')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='restore from this checkpoint')
-
 args = parser.parse_args()
 
-# default environment settings, should change rarely since they affect
-# all configs
-IMAGE_NAME = 'reference03'
-CONDA_ENV = 'pytorch_p36'
-
-# 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global
-# batch size
+# Config notes:
+# 'base_lr': gives learning rate relative to  BASE_LR_BATCHSIZE, actual
+# learning rate will be applied by scaling by global_batch_size/BASE_LR_BATCHSIZE
 # local_batch_size: per-GPU batch size
+
 BASE_LR_BATCHSIZE = 32
 
 # logs: yaro-1gpu
@@ -58,57 +54,12 @@ one_gpu = {
     'machines': 1
 }
 
-# logs: yaro-one.08
-one_machine = {
-    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 1,
-}
-
-# logs: yaro-fp16
+# Logs: yaro-fp16
 one_machine_fp16 = {
     'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
-}
-
-# /ncluster/runs.new/yaro-fp16.09
-one_machine_fp16_2xlr = {
-    'base_lr': 0.000125 * 5 / 3 * 2,  # from ben-big-lr.09
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
-}
-
-# /ncluster/runs.new/yaro-fp16.10
-one_machine_fp16_4xlr = {
-    'base_lr': 0.000125 * 5 / 3 * 4,  # from ben-big-lr.09
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
-}
-
-# /ncluster/runs.new/yaro-fp16.11
-# nans after 30 seconds
-one_machine_fp16_8xlr = {
-    'base_lr': 0.000125 * 5 / 3 * 8,  # from ben-big-lr.09
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 1,
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
-}
-
-one_machine_fp16_checkpoint = {
-    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 1,
-    'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
@@ -121,14 +72,6 @@ two_machines_fp16 = {
     'machines': 2,
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
-
-two_machines = {
-    'base_lr': 0.000125 * 5 / 3,  # yaro-two.07
-    'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 96,
-    'machines': 2,
-}
-
 
 # yaro-four
 four_machines = {
@@ -145,7 +88,8 @@ eight_machines = {
     'local_batch_size': 96,
     'machines': 8,
     'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
-    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--warmup_tokens', 50e6]
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale',
+                            '--warmup_tokens', 50e6]
 }
 
 
@@ -158,37 +102,13 @@ def _get_nccl_params():
 
 
 if __name__ == '__main__':
-    ncluster.set_backend('aws')
-    ncluster.set_logdir_root('/ncluster/runs.new')  # TODO(y): /ncluster/runs
-
-    if args.config:
-        assert not args.instance_type, "specify instance_type as part of config"
-        assert not args.machines, "specify number of machines as part of config"
-        assert re.match('\\w+', args.config)
-        assert args.config in globals()
-        config = eval(args.config)
-
-    else:  # setting config vars through command-line flags
-        assert args.instance_type
-        assert args.machines
-        config = {'base_lr': 0.000125 * 5 / 3,
-                  'local_batch_size': 96,
-                  'instance_type': args.instance_type,
-                  'machines': args.machines}
+    assert args.config in globals(), f"unknown config {args.config}"
+    config = eval(args.config)
 
     config = AttrDefault(str, config)     # easier access to dictionary entries
-    config.image_name = IMAGE_NAME
-    config.conda_env = CONDA_ENV
 
-    if args.conda_env:
-        config.conda_env = args.conda_env
-        print("Using non-standard conda env ", config.conda_env)
-    if args.image_name:
-        config.image_name = args.image_name
-        print("Using non-standard image ", config.image_name)
-
-    instance_info = ncluster.aws_backend.INSTANCE_INFO[config.instance_type]
-    num_gpus_per_machine = instance_info['gpus']
+    config.image_name = args.image_name
+    config.conda_env = args.conda_env
 
     job = ncluster.make_job(name=args.name,
                             run_name=f"{args.name}",
@@ -203,16 +123,10 @@ if __name__ == '__main__':
             f'source activate {config.conda_env} && ' +
             f'pip install -r requirements.txt')
 
-    # Training script args
-    default_params = [
-    ]
-
     local_batch_size = config.local_batch_size
     base_lr = config.base_lr
-
     num_workers = num_gpus_per_machine * config.machines
     global_batch_size = local_batch_size * num_workers
-    print("using global batch ", global_batch_size)  # 512=8*32*2*1
 
     # linear LR scaling (https://arxiv.org/abs/1706.02677)
     lr = base_lr * (global_batch_size / BASE_LR_BATCHSIZE)
