@@ -234,7 +234,7 @@ LARGE_ARGS = {
     'dropout': 0.2,
     'dropatt': 0.2,
     'optim': 'lamb',
-    'warmup_tokens': 0,
+    'warmup_tokens': int(1.8e10 / 250),
     'max_tokens': int(1.8e9 * 20),
     'tgt_len': 384,
     'mem_len': 384,
