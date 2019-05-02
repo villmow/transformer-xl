@@ -90,15 +90,15 @@ one_machine_fp16_large = {
 }
 
 # fork of one_machine_fp16_large
-one_machine_fp16_large_four = {
-    'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
+four_machine_fp16_large = {
+    'base_lr': 0.00025 / 8, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 4,
     'large': True,
 }
 
-one_machine_fp16_large_eight = {
+eight_machine_fp16_large = {
     'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
