@@ -4,8 +4,9 @@ git clone https://github.com/cybertronai/transformer-xl.git
 cd transformer-xl/pytorch
 source activate pytorch_p36
 
-python eval.py --data=/ncluster/data/transformer-xl-data/wikitext-103 --dataset=wt103 --batch_size=128 --tgt_len=128 --mem_len=128 --work_dir=/ncluster/runs.new/ben-eval.02
-
+# Match eval parameters from paper.
+# https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
+python eval.py --data=/ncluster/data/transformer-xl-data/wikitext-103 --dataset=wt103 --batch_size=8 --tgt_len=128 --clamp_len=1000 --mem_len=1600 --work_dir=/ncluster/runs.new/ben-txl-large-adam.05 --bpe
 """
 import argparse
 import math
@@ -69,7 +70,7 @@ def format_log(args, loss, total, split):
         special = f'bpc {loss / math.log(2):9.5f}'
     else:
         special = f'ppl {math.exp(loss/total):9.3f}'
-    return f'| {split} loss\t{loss/total:5.2f} | {split}\t{special}\tloss {loss:.1f}\ttokens {total}\n'
+    return f'| {split} loss\t{loss/total:5.4f} | {split}\t{special}\tloss {loss:.1f}\ttokens {total}\n'
 
 def main():
     args = parser.parse_args()

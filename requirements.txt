@@ -6,9 +6,9 @@ tqdm
 pytorch_pretrained_bert
 tensorboardX
 tensorflow  # needed for tensorboardX
-git+https://github.com/cybertronai/pytorch-lamb
-# TODO: remove git repo when master is fixed.
-git+https://github.com/8enmann/pytorch-pretrained-BERT@patch-2
+pytorch-lamb
+# TODO: remove git repo when master is pushed
+git+https://github.com/huggingface/pytorch-pretrained-BERT
 #pytorch-pretrained-bert
 portalocker
 
