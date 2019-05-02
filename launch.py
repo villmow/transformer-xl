@@ -233,7 +233,7 @@ LARGE_ARGS = {
     'd_inner': 4096,
     'dropout': 0.2,
     'dropatt': 0.2,
-    'optim': 'lamb',
+    'optim': 'adam',
     'warmup_tokens': int(1.8e10 / 250),
     'max_tokens': int(1.8e9 * 20),
     'tgt_len': 384,
