@@ -198,9 +198,8 @@ class OpenAIVocab(Vocab):
             # Suppress warnings about length.
             with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
                 out = torch.LongTensor(self.tokenizer.encode(f.read()) + [self.EOT])
-                portalocker.lock(cached, portalocker.LOCK_EX)
-                torch.save(out, cached)
-                portalocker.unlock(cached)
+                with portalocker.Lock(cached, timeout=60) as _:
+                    torch.save(out, cached)
                 return out
 
 

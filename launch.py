@@ -2,7 +2,7 @@
 """Launch training on AWS with 8 GPUs."""
 
 import argparse
-from attrdict import AttrDict
+from attrdict import AttrDict, AttrDefault
 import re
 import util
 
@@ -115,14 +115,32 @@ one_machine_fp16_large_eight = {
     ]
 }
 
-# logs: yaro-fp16
-one_machine_fp16_checkpoints = {
-    'base_lr': 0,
+# /ncluster/runs.new/yaro-fp16.09
+one_machine_fp16_2xlr = {
+    'base_lr': 0.000125 * 5 / 3 * 2,  # from ben-big-lr.09
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 1,
-    #    'extra_worker_params': ['--fp16', '--dynamic_loss_scale', '--optim', 'sgd']
-    'extra_worker_params': ['--dynamic_loss_scale', '--optim', 'sgd']
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+# /ncluster/runs.new/yaro-fp16.10
+one_machine_fp16_4xlr = {
+    'base_lr': 0.000125 * 5 / 3 * 4,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+# /ncluster/runs.new/yaro-fp16.11
+# nans after 30 seconds
+one_machine_fp16_8xlr = {
+    'base_lr': 0.000125 * 5 / 3 * 8,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
 # smaller p3.16 machine, logs: ben-bpe
@@ -134,11 +152,40 @@ one_machine_fp16_small = {
     'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
+one_machine_fp16_checkpoint = {
+    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 1,
+    'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
+
+# /ncluster/runs.new/yaro-two-fp16.04 (with checkpoints)
+two_machines_fp16 = {
+    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 2,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
+}
+
 two_machines = {
     'base_lr': 0.000125 * 5 / 3,  # yaro-two.07
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 2,
+}
+
+
+# yaro-four
+four_machines = {
+    'base_lr': 0.000125,  # remove ben's 5/3 tweak, and additional penalty of 2x
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 96,
+    'machines': 4,
+    'extra_worker_params': ['--fp16', '--dynamic_loss_scale']
 }
 
 eight_machines = {
@@ -168,16 +215,17 @@ if __name__ == '__main__':
         assert not args.machines, "specify number of machines as part of config"
         assert re.match('\\w+', args.config)
         assert args.config in globals()
-        config = AttrDict(eval(args.config))
+        config = eval(args.config)
 
     else:  # setting config vars through command-line flags
         assert args.instance_type
         assert args.machines
-        config = AttrDict({'base_lr': 0.000125 * 5 / 3,
-                           'local_batch_size': 96,
-                           'instance_type': args.instance_type,
-                           'machines': args.machines})
+        config = {'base_lr': 0.000125 * 5 / 3,
+                  'local_batch_size': 96,
+                  'instance_type': args.instance_type,
+                  'machines': args.machines}
 
+    config = AttrDefault(str, config)     # easier access to dictionary entries
     config.image_name = IMAGE_NAME
     config.conda_env = CONDA_ENV
 
@@ -253,8 +301,9 @@ if __name__ == '__main__':
     if args.checkpoint_each_epoch:
         user_params.extend(['--checkpoint_each_epoch', args.checkpoint_each_epoch])
 
-    if args.checkpoint or (hasattr(config, 'checkpoint') and config.checkpoint):
-        user_params.extend(['--checkpoint', util.one_of([args.checkpoint, config.checkpoint])])
+    if args.checkpoint or config.checkpoint:
+        user_params.extend(['--checkpoint',
+                            util.one_of([args.checkpoint, config.checkpoint])])
 
     if hasattr(config, 'warmup_tokens') and config.warmup_tokens:
         user_params.extend(['--warmup_tokens', config.warmup_tokens])
