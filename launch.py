@@ -290,7 +290,7 @@ def main():
                   'instance_type': args.instance_type,
                   'machines': args.machines}
 
-    config = AttrDefault(lambda: None, config)  # easier access to dictionary entries
+    config = AttrDefault(str, config)  # easier access to dictionary entries
     config.image_name = IMAGE_NAME
     config.conda_env = CONDA_ENV
 
