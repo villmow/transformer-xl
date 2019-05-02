@@ -540,7 +540,7 @@ def train():
             else:
                 scheduler.step(global_token_count)
         else:
-            print("skipped iteration!")
+            pass
 
         if should_log:
             elapsed_time = time.time() - log_start_time
@@ -680,7 +680,7 @@ def main():
                                    static_loss_scale=args.static_loss_scale,
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
-                                   verbose=True)
+                                   verbose=False)
     model = model.to(device)
 
     #    model = util.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
