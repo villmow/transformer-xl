@@ -189,7 +189,6 @@ class OpenAIVocab(Vocab):
     def encode_file(self, path, ordered=False, verbose=False, add_eos=True, add_double_eos=False) -> torch.LongTensor:
         cached = path + '.tokenized'
         if os.path.exists(cached):
-            print('found cache')
             return torch.load(cached)
         print(f'encoding file {path} ...')
         assert os.path.exists(path), f"{path} doesn't exist"

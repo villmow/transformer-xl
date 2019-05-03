@@ -590,12 +590,6 @@ def train():
         if train_step % args.eval_interval == 0:
             evaluate(va_iter, 'val', train_step)
 
-        # TODO: instead of stopping training, transition to constant small LR forever
-        if global_token_count >= args.max_tokens:
-            logger.info('-' * 100)
-            logger.info('End of training')
-            raise StopIteration()
-
     if args.checkpoint_each_epoch:
         logger.info(f'Saving checkpoint for epoch {epoch}')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')

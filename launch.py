@@ -20,6 +20,9 @@ parser.add_argument('--skip_setup', action='store_true',
                     help='Make startup slightly faster by skiping various initialization tasks, like '
                          'tmux/efs setup. Only use on reruns.')
 
+parser.add_argument('--wiki', action='store_true',
+                    help='Train on all of wikipedia.')
+
 # network settings
 parser.add_argument('--num_rings', type=int, default=16)
 
@@ -41,7 +44,7 @@ args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'reference03'
+IMAGE_NAME = 'cybertronai00'
 CONDA_ENV = 'pytorch_p36'
 
 # 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global
@@ -80,7 +83,7 @@ one_machine_fp16 = {
 
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
 # Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
-# logs: ben-txl-large-slow.01
+# logs: ben-large-lamb-slow
 one_machine_fp16_large = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
@@ -98,6 +101,7 @@ four_machine_fp16_large = {
     'large': True,
 }
 
+# logs: ben-eight.01
 eight_machine_fp16_large = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
@@ -235,7 +239,6 @@ LARGE_ARGS = {
     'dropatt': 0.2,
     'optim': 'lamb',
     'warmup_tokens': int(3e6),
-    'max_tokens': int(1.8e9),
     'tgt_len': 384,
     'mem_len': 384,
     'eval_tgt_len': 128,
@@ -257,7 +260,6 @@ SMALL_ARGS = {
     'dropout': 0.1,
     'dropatt': 0.0,
     'optim': 'lamb',
-    'max_tokens': int(1.8e9),
     'tgt_len': 128,
     'mem_len': 128,
     'eval_tgt_len': 128,
@@ -334,11 +336,13 @@ def main():
         'dataset': 'wt103',
         'adaptive': True,
         'log_interval': 100,
-        'eval_interval': 1000,
+        'eval_interval': 500,
+        'max_tokens': int(1.5e9),
         'logdir': job.logdir,
         'distributed': True,
         'lr': lr,
         'batch_size': local_batch_size,
+        'eta_min': lr / 10,
     }
     
     worker_params.update(LARGE_ARGS if config.large else SMALL_ARGS)
@@ -352,10 +356,18 @@ def main():
 
     if args.checkpoint or config.checkpoint:
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
+    
+    if args.wiki:
+        worker_params.update({
+            'data': 'data/wikiextracted',
+            'dataset': 'wiki',
+            'dropatt': 0,
+            'dropout': 0,
+        })
 
     worker_params.update(user_params)
 
-    if 'extra_worker_params' in config:
+    if config.extra_worker_params:
         worker_params.update(config.extra_worker_params)
 
     nccl_params = _get_nccl_params()

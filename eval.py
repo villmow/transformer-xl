@@ -9,13 +9,12 @@ source activate pytorch_p36
 python eval.py --data=/ncluster/data/transformer-xl-data/wikitext-103 --dataset=wt103 --batch_size=8 --tgt_len=128 --clamp_len=1000 --mem_len=1600 --work_dir=/ncluster/runs.new/ben-txl-large-adam.05 --bpe
 
 # new dataset
-python eval.py --data=wikiextracted/ --dataset=wiki --batch_size=8 --tgt_len=128 --clamp_len=1000 --mem_len=1600 --work_dir=/ncluster/runs.new/ben-txl-large-adam.05 --bpe
+python eval.py --data=data/wikiextracted/ --dataset=wiki --batch_size=8 --tgt_len=128 --clamp_len=1000 --mem_len=1600 --work_dir=/ncluster/runs.new/ben-txl-large-adam.05 --bpe
 
 """
 import argparse
 import math
 import os
-import sys
 
 import torch
 import tqdm
