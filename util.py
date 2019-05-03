@@ -7,7 +7,8 @@ import torch.distributed as dist
 
 def toscalar(t):  # use on python scalars/pytorch scalars
     """Converts Python scalar or PyTorch tensor to Python scalar"""
-    if isinstance(t, (float, int)): return t
+    if isinstance(t, (float, int)):
+        return t
     if hasattr(t, 'item'):
         return t.item()
     else:
@@ -52,7 +53,8 @@ def one_of(l):
         return l[1]
     else:
         assert f"List {l} has more than one non-zero entries"
-    
+
+
 def dist_sum_tensor(tensor):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
@@ -109,3 +111,15 @@ def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
         torch.save(ddp_model.module, f_1)
     with open(directory + f'/optimizer-{suffix}.pt', 'wb') as f_1:
         torch.save(optimizer_.state_dict(), f_1)
+
+
+def dict_to_args(dict_: dict):
+    def item_to_arg(item: tuple):
+        k, v = item
+        if v is False or v is None:
+            return ''
+        if v is True:
+            return f'--{k}'
+        return f'--{k} {v}'
+
+    return ' '.join([item_to_arg(item) for item in dict_.items()])

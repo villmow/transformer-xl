@@ -28,7 +28,6 @@ from mem_transformer import MemTransformerLM
 from lr_finder import LRFinder
 from pytorch_lamb import Lamb, log_lamb_rs
 
-from util import toscalar
 import util
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
@@ -132,8 +131,6 @@ parser.add_argument('--restart', action='store_true',
                     help='restart training from the saved checkpoint')
 parser.add_argument('--restart_dir', type=str, default='',
                     help='restart dir')
-parser.add_argument('--debug', action='store_true',
-                    help='run in debug mode (do not create exp dir)')
 parser.add_argument('--same_length', action='store_true',
                     help='use the same attn length for all tokens')
 parser.add_argument('--attn_type', type=int, default=0,
@@ -178,11 +175,12 @@ parser.add_argument('--local_rank', default=0, type=int,
                          'or automatically set by using \'python -m multiproc\'.')
 
 # infra flags
+# TODO(y): lower shutdown secs 10x again
 parser.add_argument('--skip_auto_shutdown', action='store_true',
                     help='skip shutdown at the end of training or failure')
-parser.add_argument('--auto_shutdown_success_delay_mins', default=10, type=int,
+parser.add_argument('--auto_shutdown_success_delay_mins', default=100, type=int,
                     help='how long to wait until shutting down on success')
-parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
+parser.add_argument('--auto_shutdown_failure_delay_mins', default=600, type=int,
                     help='how long to wait before shutting down on error')
 
 args = parser.parse_args()
@@ -435,7 +433,7 @@ def evaluate(eval_iter, split, train_step=-1):
     else:
         model_to_reset.reset_length(
             args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
-  
+
     # Evaluation
     total_len, total_loss = 0, 0.
     with torch.no_grad():
@@ -460,23 +458,21 @@ def evaluate(eval_iter, split, train_step=-1):
     mean_loss = total_loss / total_len
     logger.info('-' * 100)
     log_str = (f'| Eval {train_step // args.eval_interval:3d} at step {train_step:>8d} | ' +
-                f'time: {time.time() - eval_start_time:5.2f}s ' +
-                f'| {split} loss {mean_loss:5.2f}')
+               f'time: {time.time() - eval_start_time:5.2f}s ' +
+               f'| {split} loss {mean_loss:5.2f}')
     if args.dataset in ['enwik8', 'text8']:
         log_str += f' | bpc {mean_loss / math.log(2):9.5f}'
     else:
         log_str += f' | {split} ppl {math.exp(mean_loss):9.3f}'
     logger.info(log_str)
     logger.info('-' * 100)
-    log_tb(f'loss/{split}_loss', mean_loss)
-    log_tb(f'loss/{split}_ppl', math.exp(mean_loss))
+    log_tb(f'learning/{split}_loss', mean_loss)
+    log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
 
     # Update checkpoint if validation loss improved.
-    if split == 'val' and  (not best_val_loss or mean_loss < best_val_loss):
-        if not args.debug:
-            logger.info('Saving checkpoint for new best loss')
-            util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
-
+    if split == 'val' and (not best_val_loss or mean_loss < best_val_loss):
+        logger.info('Saving checkpoint for new best loss')
+        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
         best_val_loss = mean_loss
 
 
@@ -502,8 +498,9 @@ def train():
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)  # needed for NCCL sync
         batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+        batch_total = util.toscalar(batch_total)
 
-        total_tokens = batch_total.item() * seq_len
+        total_tokens = batch_total * seq_len
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
 
         global_token_count += total_tokens
@@ -557,14 +554,22 @@ def train():
             else:
                 log_str += ' | ppl {:9.3f}'.format(math.exp(cur_loss))
             logger.info(log_str)
-            log_tb('loss/epoch', epoch)
-            log_tb('loss/loss', cur_loss)
-            log_tb('loss/ppl', math.exp(cur_loss))
+            log_tb('learning/epoch', epoch)
+            log_tb('_loss', cur_loss)  # the most important thing
+            log_tb('learning/loss', cur_loss)
+            log_tb('learning/ppl', math.exp(cur_loss))
+
+            # currently step timings are not synchronized in multi-machine
+            # case (see #4). Can add torch.distributed.barrier() to get
+            # more accurate timings, but this may add slowness.
             log_tb('times/step', 1000 * elapsed_time / elapsed_steps)
             current_lr = optimizer.param_groups[0]['lr']
-            log_tb('lr', current_lr)
-            log_tb('lr_normalized1', current_lr / toscalar(batch_total))
-            log_tb('lr_normalized2', current_lr / toscalar(total_tokens))
+
+            log_tb('learning/lr', current_lr)
+
+            # 32 is the "canonical" batch size
+            linear_scaling_factor = batch_total / 32
+            log_tb('learning/base_lr', current_lr / linear_scaling_factor)
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
 
@@ -658,42 +663,26 @@ def main():
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
-
     if args.checkpoint:
-        #        util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
         if global_rank == 0:
             util.restore_from_checkpoint(model=model, checkpoint_fn=args.checkpoint)
 
-        # with open(os.path.join(args.restart_dir, 'optimizer.pt'), 'rb') as f:
-        #     opt_state_dict = torch.load(f)
-        #     optimizer.load_state_dict(opt_state_dict)
-
-    
-    if args.fp16:
-        # If args.dynamic_loss_scale is False, static_loss_scale will be used.
-        model = FP16_Module(model)
-
     model = model.to(device)
     if args.fp16:
-        # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
+        model = FP16_Module(model)
         optimizer = FP16_Optimizer(optimizer,
                                    static_loss_scale=args.static_loss_scale,
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=False)
-    model = model.to(device)
-
-    #    model = util.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
     model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
-                                          
     logdir = args.logdir
     assert os.path.exists(logdir)
 
-    if global_rank == 0 and not args.debug:
+    if global_rank == 0:
         event_writer = SummaryWriter(logdir)
 
-    log_tb("first", time.time())
     event_writer.add_text('args', str(args))
 
     # test checkpoint writing
