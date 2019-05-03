@@ -231,12 +231,11 @@ class Corpus:
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
         elif self.dataset == 'wiki':
-            # Take the first and second file of each alphabetical directory for train and test.
-            # This avoids alphabet bias.
-            # The full 132 files is too big for train and test, so take only the first 10.
-            self.valid = sorted([x for x in file_paths if x.endswith('00.txt')])[:10]
-            self.test = sorted([x for x in file_paths if x.endswith('01.txt')])[:10]
-            self.train = list(set(file_paths) - set(self.valid) - set(self.test))
+            valid_path = sorted(file_paths)[42]
+            test_path = sorted(file_paths)[1337]
+            self.valid = self.vocab.encode_file(valid_path, ordered=True)
+            self.test = self.vocab.encode_file(test_path, ordered=True)
+            self.train = list(set(file_paths) - set((valid_path, test_path)))
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'wiki.train.tokens'), ordered=True, add_eos=False)
@@ -252,7 +251,7 @@ class Corpus:
         if self.dataset in ['lm1b', 'wiki']:
             if split == 'train':
                 kwargs['shuffle'] = True
-            return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
+                return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
         
         return LMOrderedIterator(subset, *args, **kwargs)
 
@@ -272,7 +271,9 @@ class Corpus:
             kwargs['shuffle'] = True
             return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
         if self.dataset == 'wiki':
-            return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
+            if split == 'train':
+                return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
+            return LMOrderedIterator(data, *args, **kwargs)
 
 
 def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> Corpus:
@@ -283,7 +284,8 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
         dataset: eg 'wt103' which tells the Corpus how to parse the data.
     """
     cache_filepath = os.path.join(datadir, 'cache.pt.bpe' if use_bpe else 'cache.pt')
-    if os.path.exists(cache_filepath):
+    # Don't cache dataset for wiki, it's just a file list.
+    if os.path.exists(cache_filepath) and dataset != 'wiki':
         print('Loading cached dataset...')
         corpus = torch.load(cache_filepath)
     else:
