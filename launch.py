@@ -332,7 +332,7 @@ def main():
     # worker parameters with training setup
     worker_params = {
         'seed': 1111,
-        'data': '/ncluster/data/transformer-xl-data/wikitext-103',
+        'data': 'data/wikitext-103',
         'dataset': 'wt103',
         'adaptive': True,
         'log_interval': 100,
