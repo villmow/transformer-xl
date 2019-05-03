@@ -232,8 +232,10 @@ class Corpus:
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
         elif self.dataset == 'wiki':
             # Take the first and second file of each alphabetical directory for train and test.
-            self.valid = [x for x in file_paths if x.endswith('00.txt')]
-            self.test = [x for x in file_paths if x.endswith('01.txt')]
+            # This avoids alphabet bias.
+            # The full 132 files is too big for train and test, so take only the first 10.
+            self.valid = sorted([x for x in file_paths if x.endswith('00.txt')])[:10]
+            self.test = sorted([x for x in file_paths if x.endswith('01.txt')])[:10]
             self.train = list(set(file_paths) - set(self.valid) - set(self.test))
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
