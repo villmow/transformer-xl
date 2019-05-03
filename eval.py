@@ -7,6 +7,10 @@ source activate pytorch_p36
 # Match eval parameters from paper.
 # https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
 python eval.py --data=/ncluster/data/transformer-xl-data/wikitext-103 --dataset=wt103 --batch_size=8 --tgt_len=128 --clamp_len=1000 --mem_len=1600 --work_dir=/ncluster/runs.new/ben-txl-large-adam.05 --bpe
+
+# new dataset
+python eval.py --data=wikiextracted/ --dataset=wiki --batch_size=8 --tgt_len=128 --clamp_len=1000 --mem_len=1600 --work_dir=/ncluster/runs.new/ben-txl-large-adam.05 --bpe
+
 """
 import argparse
 import math
@@ -23,7 +27,7 @@ parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2'],
+                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki'],
                     help='dataset name')
 parser.add_argument('--split', type=str, default='all',
                     choices=['all', 'valid', 'test'],

@@ -82,7 +82,7 @@ one_machine_fp16 = {
 # Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
 # logs: ben-txl-large-slow.01
 one_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.005 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 1,
@@ -91,7 +91,7 @@ one_machine_fp16_large = {
 
 # fork of one_machine_fp16_large
 four_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.005 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 4,
@@ -99,7 +99,7 @@ four_machine_fp16_large = {
 }
 
 eight_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.005 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 8,
