@@ -79,12 +79,67 @@ four_machines = {
     'machines': 4,
 }
 
+# logs: /ncluster/runs/sixteen.01/info.log
+sixteen_machines = {
+    'base_lr': 0.000125 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'batch_size': 96,
+    'machines': 16,
+}
+
 # logs: yaro-eight.03
 eight_machines = {
     'base_lr': 0.000125 / 2,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 96,
     'machines': 8,
+}
+
+
+
+one_machine_large = {
+    'base_lr': 0.000125 * 5 / 3,
+    'instance_type': 'p3dn.24xlarge',
+    'batch_size': 16,
+    'architecture': 'wt103_large',
+    'machines': 1,
+}
+
+
+two_machines_large = {
+    'base_lr': 0.000125 * 5 / 3,
+    'instance_type': 'p3dn.24xlarge',
+    'batch_size': 16,
+    'architecture': 'wt103_large',
+    'machines': 2,
+}
+
+
+# logs: /ncluster/runs/four.01
+four_machines_large = {
+    'base_lr': 0.000125,
+    'instance_type': 'p3dn.24xlarge',
+    'batch_size': 16,
+    'architecture': 'wt103_large',
+    'machines': 4,
+}
+
+# logs: /ncluster/runs/eight.02/info.log
+eight_machines_large = {
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'instance_type': 'p3dn.24xlarge',
+    'batch_size': 16,
+    'architecture': 'wt103_large',
+    'machines': 8,
+}
+
+# logs: /ncluster/runs/sixteen.01/info.log
+sixteen_machines_large = {
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'instance_type': 'p3dn.24xlarge',
+    'batch_size': 16,
+    'architecture': 'wt103_large',
+    'machines': 16,
 }
 
 ################################################################################
