@@ -165,7 +165,6 @@ class LMMultiFileIterator(LMShuffledIterator):
         if self.shuffle:
             np.random.shuffle(sents)
         # Create virtual sentences for wikipedia data.
-        # TODO: Load a few files at a time, then chunk?
         if type(sents) == torch.Tensor:
             return iter(sents.split(len(sents) // self.bsz))
         return iter(sents)

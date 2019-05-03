@@ -124,9 +124,6 @@ parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
 
-# todo(y): replace work_dir with logdir
-parser.add_argument('--work_dir', default=None, type=str,
-                    help='Experiment directory. Defaults to logdir')
 parser.add_argument('--restart', action='store_true',
                     help='restart training from the saved checkpoint')
 parser.add_argument('--restart_dir', type=str, default='',
@@ -166,7 +163,6 @@ parser.add_argument('--dynamic_loss_scale', action='store_true',
                          ' supersedes --static-loss-scale.')
 
 # distributed training flags
-parser.add_argument('--distributed', action='store_true', help='Run distributed training. Default True')
 parser.add_argument('--dist_url', default='env://', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist_backend', default='nccl', type=str, help='distributed backend')
@@ -307,9 +303,6 @@ if args.d_embed < 0:
 
 assert args.ext_len >= 0, 'extended context length must be non-negative'
 
-if not args.work_dir:
-    args.work_dir = args.logdir
-
 logger = FileLogger(args.logdir, is_master=(global_rank == 0), is_rank0=(args.local_rank == 0))
 
 # Set the random seed manually for reproducibility.
@@ -404,7 +397,6 @@ def weights_init(m):
             init_bias(m.r_bias)
 
 
-# todo(y): move into main()
 logger.info("Torch version: {}".format(torch.__version__))
 logger.info('=' * 100)
 for k, v in args.__dict__.items():
@@ -488,8 +480,6 @@ def train():
     mems = tuple()
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(tr_iter):
-        # TODO(y): batch is dimension 1, why?
-
         assert seq_len == data.shape[0]
         for i in range(1, data.shape[0]):
             assert torch.all(torch.eq(data[i], target[i - 1]))
@@ -587,7 +577,6 @@ def train():
                 log_tb("memory/cached_gb", torch.cuda.memory_cached() / 1e9)
                 log_tb("memory/max_cached_gb", torch.cuda.max_memory_cached() / 1e9)
 
-            # todo(y): refactor to init loss at the top
             train_loss = 0
             log_start_time = time.time()
             last_log_step = train_step
@@ -595,7 +584,6 @@ def train():
         if train_step % args.eval_interval == 0:
             evaluate(va_iter, 'val', train_step)
 
-        # TODO: instead of stopping training, transition to constant small LR forever
         if global_token_count >= args.max_tokens:
             logger.info('-' * 100)
             logger.info('End of training')
@@ -645,7 +633,6 @@ def main():
         optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
     else:
         assert args.optim.lower() == 'adam'
-        # TODO(b): try , betas=(0.9, 0.99))
         optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
     # scheduler
@@ -659,7 +646,6 @@ def main():
     elif args.scheduler == 'constant':
         pass
 
-    # todo(y): only if rank0
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
@@ -711,7 +697,7 @@ def main():
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
-    model_file = os.path.join(args.work_dir, 'model-best.pt')
+    model_file = os.path.join(args.logdir, 'model-best.pt')
     if os.path.exists(model_file):
         with open(model_file, 'rb') as model_f:
             with timeit('load'):

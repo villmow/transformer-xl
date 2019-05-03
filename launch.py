@@ -21,7 +21,7 @@ parser.add_argument('--launch_tensorboard', action='store_true',
 
 # Flags that affect all configs
 parser.add_argument('--num_rings', type=int, default=16)
-parser.add_argument('--image_name', type=str, default='reference03',
+parser.add_argument('--image_name', type=str, default='cybertronai00',
                     help="use custom AMI ")
 parser.add_argument('--conda_env', type=str, default='pytorch_p36',
                     help='use custom conda env')
@@ -47,9 +47,8 @@ config_defaults = {
 # Distributed training configs
 ################################################################################
 
-# logs: yaro-1gpu
+# logs: yaro-1gpu.02
 one_gpu = {
-    # 24x smaller batch than ben-big-lr.09, use 5x more agressive learning rate
     'base_lr': 0.000125 * 5 / 3 * 5,
     'batch_size': 32,
     'instance_type': 'p3.2xlarge',
@@ -58,23 +57,23 @@ one_gpu = {
 
 # Logs: yaro-fp16
 one_machine = {
-    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
+    'base_lr': 0.000125 * 5 / 3,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 96,
     'machines': 1,
 }
 
-# /ncluster/runs.new/yaro-two-fp16.04 (with checkpoints)
+# logs: yaro-two-fp16.04
 two_machines = {
-    'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
+    'base_lr': 0.000125 * 5 / 3,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 96,
     'machines': 2,
 }
 
-# yaro-four
+# logs: yaro-four
 four_machines = {
-    'base_lr': 0.000125,  # remove ben's 5/3 tweak, and additional penalty of 2x
+    'base_lr': 0.000125,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 96,
     'machines': 4,
@@ -82,11 +81,10 @@ four_machines = {
 
 # logs: yaro-eight.03
 eight_machines = {
-    'base_lr': 0.000125 / 2,  # remove ben's 5/3 tweak, and additional penalty of 2x
+    'base_lr': 0.000125 / 2,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 96,
     'machines': 8,
-    'checkpoint': '/ncluster/runs.new/yaro-one.08/model-1.pt',
 }
 
 ################################################################################
@@ -161,16 +159,17 @@ def main():
     # linear LR scaling (https://arxiv.org/abs/1706.02677)
     lr = config.base_lr * (global_batch_size / BASE_LR_BATCHSIZE)
 
+    # TODO(y): change dataset location to /data/transformer-xl-data after
+    # image is cut
     # worker parameters with training setup
     worker_params = {
         'seed': 1111,
-        'data': '/data/transformer-xl-data/wikitext-103',
+        'data': 'data/wikitext-103',
         'dataset': 'wt103',
         'adaptive': True,
         'log_interval': 100,
         'eval_interval': 1000,
         'logdir': job.logdir,
-        'distributed': True,  # TODO: remove since everything is distributed?
         'lr': lr,
         'fp16': True,
         'dynamic_loss_scale': True,
