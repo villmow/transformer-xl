@@ -19,10 +19,12 @@ python launch.py --config=one_machine
 
 # Throughput results
 
-## To reproduce "44x faster" than original number
+To reproduce "44x faster" than original number
 
-# 90 seconds per epoch on 8-machines vs 3800 seconds originally
+90 seconds per epoch on 8-machines vs 3800 seconds originally
+```
 python launch.py --config=eight_machines
+```
 
 
 # To reproduce throughput numbers reported 
