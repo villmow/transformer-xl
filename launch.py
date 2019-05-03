@@ -55,7 +55,7 @@ one_gpu = {
     'base_lr': 0.000125 * 5 / 3 * 5,
     'local_batch_size': 32,
     'instance_type': 'p3.2xlarge',
-    'machines': 1
+    'machines': 1,
 }
 
 # logs: yaro-one.08
@@ -82,7 +82,7 @@ one_machine_fp16 = {
 # Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
 # logs: ben-txl-large-slow.01
 one_machine_fp16_large = {
-    'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 1,
@@ -91,7 +91,7 @@ one_machine_fp16_large = {
 
 # fork of one_machine_fp16_large
 four_machine_fp16_large = {
-    'base_lr': 0.00025 / 8, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 4,
@@ -99,7 +99,7 @@ four_machine_fp16_large = {
 }
 
 eight_machine_fp16_large = {
-    'base_lr': 0.00025 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 8,
@@ -233,9 +233,9 @@ LARGE_ARGS = {
     'd_inner': 4096,
     'dropout': 0.2,
     'dropatt': 0.2,
-    'optim': 'adam',
-    'warmup_tokens': int(1.8e10 / 250),
-    'max_tokens': int(1.8e9 * 20),
+    'optim': 'lamb',
+    'warmup_tokens': int(3e6),
+    'max_tokens': int(1.8e9),
     'tgt_len': 384,
     'mem_len': 384,
     'eval_tgt_len': 128,
@@ -279,7 +279,7 @@ def main():
         assert not args.instance_type, "specify instance_type as part of config"
         assert not args.machines, "specify number of machines as part of config"
         assert re.match('\\w+', args.config)
-        assert args.config in globals()
+        assert args.config in globals(), f'no config called {args.config}'
         config = eval(args.config)
 
     else:  # setting config vars through command-line flags
