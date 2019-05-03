@@ -275,7 +275,7 @@ def _get_nccl_params():
 
 def main():
     ncluster.set_backend('aws')
-    ncluster.set_logdir_root('/ncluster/runs.new')  # TODO(y): /ncluster/runs
+    ncluster.set_logdir_root('/ncluster/runs')
 
     if args.config:
         assert not args.instance_type, "specify instance_type as part of config"
@@ -361,8 +361,8 @@ def main():
         worker_params.update({
             'data': 'data/wikiextracted',
             'dataset': 'wiki',
-            'dropatt': 0,
-            'dropout': 0,
+            'dropatt': 0.1,
+            'dropout': 0.1,
         })
 
     worker_params.update(user_params)

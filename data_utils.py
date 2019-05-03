@@ -250,7 +250,6 @@ class Corpus:
         subset = list(chunk(data, max_rank))[rank]
         if self.dataset in ['lm1b', 'wiki']:
             if split == 'train':
-                kwargs['shuffle'] = True
                 return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
         
         return LMOrderedIterator(subset, *args, **kwargs)
