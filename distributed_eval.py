@@ -228,11 +228,8 @@ def sum_tensor(tensor):
     if not args.distributed:
         return tensor
     rt = tensor.clone()
-    # TODO(y): fix UserWarning: torch.distributed.reduce_op is deprecated, please use torch.distributed.ReduceOp instead
-    #  warnings.warn("torch.distributed.reduce_op is deprecated, please use "
-    # /home/ubuntu/anaconda3/envs/pytorch_p36/lib/python3.6/site-packages/torch/distributed/distributed_c10d.py:86: U
 
-    dist.all_reduce(rt, op=dist.reduce_op.SUM)
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     return rt
 
 # no_op method/object that accept every signature
@@ -242,7 +239,6 @@ class NoOp:
     return no_op
 
 
-# todo(y): optimnizer/model are also global variables, fix
 def save_checkpoint(model_1, optimizer_1, suffix=''):
     if not is_master:
         return

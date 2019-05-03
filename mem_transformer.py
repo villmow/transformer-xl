@@ -46,7 +46,6 @@ class PositionwiseFF(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # TODO(y): try Apex layer norm?
         # https://nvidia.github.io/apex/layernorm.html
         self.layer_norm = nn.LayerNorm(d_model)
 

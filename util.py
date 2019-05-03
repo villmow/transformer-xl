@@ -32,7 +32,6 @@ def _info(_type, value, tb):
 
 
 def pdb_on_error():
-    # todo(y): doesn't work when called from other files?
     sys.excepthook = _info
 
 
