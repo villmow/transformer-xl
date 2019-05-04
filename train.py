@@ -1,6 +1,7 @@
 # coding: utf-8
 #
 import argparse
+import collections
 import datetime
 import itertools
 import logging
@@ -225,15 +226,23 @@ torch.cuda.set_device(args.local_rank)
 #         8000: 80,
 #         9600: 96,
 #     }
-# elif args.batch_size == 16:  # large model
-#     BATCH_SCHEDULE = {
-#         0: 2,
-#         1600: 4,
-#         1600: 8,
-#         3200: 16,
-#     }
-# else:
-BATCH_SCHEDULE = {}
+if args.batch_size == 16:  # large model
+    BATCH_SCHEDULE = {
+        0: 2,
+        1000: 3,
+        1500: 4,
+        2000: 5,
+        2500: 6,
+        3000: 8,
+        4000: 10,
+        5000: 12,
+        5500: 13,
+        6000: 14,
+        6500: 15,
+        7000: 16,
+    }
+else:
+    BATCH_SCHEDULE = {}
 
 class FileLogger:
     def __init__(self, output_dir: str, global_rank: int, local_rank: int):
@@ -425,6 +434,21 @@ for k, v in args.__dict__.items():
     logger.info('    - {} : {}'.format(k, v))
 logger.info('=' * 100)
 
+def log_SNR(optimizer: optim.Optimizer, event_writer: SummaryWriter, token_count: int):
+    """Log a histogram of trust ratio scalars in across layers."""
+    results = collections.defaultdict(list)
+    for group in optimizer.param_groups:
+        for p in group['params']:
+            if p.grad is None:
+                continue
+            m, v = p.grad.mean(), p.grad.var()
+            results['mean'].append(m)
+            results['var'].append(v)
+            results['snr'].append(m / v.sqrt())
+
+    for k, v in results.items():
+        event_writer.add_histogram(f'grad/{k}', torch.tensor(v), token_count)
+
 
 ###############################################################################
 # Training code
@@ -588,8 +612,9 @@ def train(va_iter):
             log_tb('lr', current_lr)
             log_tb('lr_normalized1', current_lr / toscalar(batch_total))
             log_tb('lr_normalized2', current_lr / toscalar(total_tokens))
-            #if args.optim == 'lamb':
-            #    log_lamb_rs(optimizer, event_writer, global_token_count)
+            if args.optim == 'lamb':
+                log_lamb_rs(optimizer, event_writer, global_token_count)
+                log_SNR(optimizer, event_writer, global_token_count)
 
             time_per_batch = elapsed_time / elapsed_steps
             time_per_sample = time_per_batch / current_batch_size
