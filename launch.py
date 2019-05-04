@@ -377,6 +377,7 @@ def main():
         worker_params.update({
             'div_val': 1,
             'bpe': True,
+            'adaptive': False,
         })
 
     worker_params.update(user_params)
