@@ -198,6 +198,7 @@ epoch = 0
 train_step = 0
 optimizer = None
 scheduler = None
+current_batch_size = args.batch_size
 
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
@@ -205,51 +206,70 @@ max_rank = util.get_world_size()
 torch.cuda.set_device(args.local_rank)
 
 # break into PDB debugger on exception
-if global_rank == 0:
-    util.pdb_on_error()
+#if global_rank == 0:
+#    util.pdb_on_error()
 
+# At the given batch index, use the given training batch size.
+# TODO: make this an arg
+# if args.batch_size == 96:  # small model
+#     BATCH_SCHEDULE = {
+#         0: 2,
+#         400: 4,
+#         800: 8,
+#         1600: 16,
+#         3200: 32,
+#         4800: 48,
+#         5600: 56,
+#         6400: 64,
+#         7200: 72,
+#         8000: 80,
+#         9600: 96,
+#     }
+# elif args.batch_size == 16:  # large model
+#     BATCH_SCHEDULE = {
+#         0: 2,
+#         1600: 4,
+#         1600: 8,
+#         3200: 16,
+#     }
+# else:
+BATCH_SCHEDULE = {}
 
 class FileLogger:
-    def __init__(self, output_dir: str, is_master=False, is_rank0=False):
+    def __init__(self, output_dir: str, global_rank: int, local_rank: int):
         self.output_dir = output_dir
-        if not os.path.exists(self.output_dir):
-            if global_rank == 0:
-                os.makedirs(self.output_dir)
-        # only log on one process per node
-        if is_rank0:
-            self.logger = FileLogger.get_logger(output_dir, log_to_file=is_master)
-        else:
-            self.logger = util.NoOp()
+        if not os.path.exists(self.output_dir) and global_rank == 0:
+            os.makedirs(self.output_dir)
+        self.logger = FileLogger.get_logger(output_dir, global_rank=global_rank, local_rank=local_rank)
 
     def exception(self, *args_, **kwargs):
         return self.logger.exception(*args_, **kwargs)
 
     @staticmethod
-    def get_logger(output_dir: str, log_to_file: bool = True):
+    def get_logger(output_dir: str, global_rank: int, local_rank: int):
         logger_ = logging.getLogger('txl training')
         logger_.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(message)s')
 
-        if log_to_file:
-            vlog = logging.FileHandler(output_dir + '/info.log')
-            vlog.setLevel(logging.INFO)
-            vlog.setFormatter(formatter)
-            logger_.addHandler(vlog)
+        vlog = logging.FileHandler(output_dir + f'/info-{global_rank}.log')
+        vlog.setLevel(logging.INFO)
+        vlog.setFormatter(formatter)
+        logger_.addHandler(vlog)
 
-            eventlog = logging.FileHandler(output_dir + '/warn.log')
-            eventlog.setLevel(logging.WARN)
-            eventlog.setFormatter(formatter)
-            logger_.addHandler(eventlog)
+        eventlog = logging.FileHandler(output_dir +  f'/warn-{global_rank}.log')
+        eventlog.setLevel(logging.WARN)
+        eventlog.setFormatter(formatter)
+        logger_.addHandler(eventlog)
 
-            time_formatter = logging.Formatter('%(asctime)s - %(filename)s:%(lineno)d - %(message)s')
-            debuglog = logging.FileHandler(output_dir + '/debug.log')
-            debuglog.setLevel(logging.DEBUG)
-            debuglog.setFormatter(time_formatter)
-            logger_.addHandler(debuglog)
+        time_formatter = logging.Formatter('%(asctime)s - %(filename)s:%(lineno)d - %(message)s')
+        debuglog = logging.FileHandler(output_dir + f'/debug-{global_rank}.log')
+        debuglog.setLevel(logging.DEBUG)
+        debuglog.setFormatter(time_formatter)
+        logger_.addHandler(debuglog)
 
         console = logging.StreamHandler()
         console.setFormatter(formatter)
-        console.setLevel(logging.DEBUG)
+        console.setLevel(logging.DEBUG if local_rank == 0 else logging.WARN)
         logger_.addHandler(console)
         return logger_
 
@@ -312,7 +332,7 @@ assert args.ext_len >= 0, 'extended context length must be non-negative'
 if not args.work_dir:
     args.work_dir = args.logdir
 
-logger = FileLogger(args.logdir, is_master=(global_rank == 0), is_rank0=(args.local_rank == 0))
+logger = FileLogger(args.logdir, global_rank=global_rank, local_rank=local_rank)
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -328,14 +348,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 corpus = get_lm_corpus(args.data, args.dataset, use_bpe=args.bpe)
 ntokens = len(corpus.vocab)
 args.n_token = ntokens
-
-eval_batch_size = args.batch_size * 2
-tr_iter, va_iter, te_iter = [
-    corpus.get_dist_iterator(
-        split, global_rank, max_rank, args.batch_size, args.tgt_len,
-        device=device, ext_len=args.ext_len)
-    for split in ('train', 'valid', 'test')
-]
 
 # adaptive softmax / embedding
 cutoffs, tie_projs = [], [False]
@@ -426,7 +438,12 @@ def evaluate(eval_iter, split, train_step=-1):
     model.eval()
 
     # Have to unwrap twice: DDP & FP16
-    model_to_reset = model.module.module if args.fp16 else model.module
+    def unwrap(module):
+        if isinstance(module, MemTransformerLM):
+            return module
+        return unwrap(module.module)
+        
+    model_to_reset = unwrap(model)
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
     if args.mem_len == 0:
@@ -480,15 +497,19 @@ def evaluate(eval_iter, split, train_step=-1):
         best_val_loss = mean_loss
 
 
-def train():
+def train(va_iter):
     global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, \
-        train_step, last_log_step, epoch, optimizer, scheduler
+        train_step, last_log_step, epoch, optimizer, scheduler, current_batch_size
     # Turn on training mode which enables dropout.
     model.train()
 
-    log_tb('sizes/batch_size', args.batch_size)
-    log_tb('sizes/seq_size', args.tgt_len)
+    current_batch_size = BATCH_SCHEDULE.get(train_step, current_batch_size)
 
+    log_tb('sizes/batch_size', current_batch_size)
+    log_tb('sizes/seq_size', args.tgt_len)
+    tr_iter = corpus.get_dist_iterator(
+        'train', global_rank, max_rank, current_batch_size, args.tgt_len,
+        device=device, ext_len=args.ext_len)
     mems = tuple()
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(tr_iter):
@@ -501,7 +522,10 @@ def train():
 
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)  # needed for NCCL sync
-        batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+        if args.distributed:
+            batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+        else:
+            batch_total = batch_total.sum()
 
         total_tokens = batch_total.item() * seq_len
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
@@ -525,17 +549,16 @@ def train():
 
         optimizer.step()
 
-        # step-wise learning rate annealing
         train_step += 1
 
+        # step-wise learning rate annealing
         if not (args.fp16 and optimizer.overflow):
             if args.scheduler in ['cosine', 'constant', 'dev_perf']:
                 # linear warmup stage
                 if global_token_count < args.warmup_tokens:
                     curr_lr = args.lr * global_token_count / args.warmup_tokens
                     optimizer.param_groups[0]['lr'] = curr_lr
-                else:
-                    if args.scheduler == 'cosine':
+                elif args.scheduler == 'cosine':
                         scheduler.step(global_token_count)
             else:
                 scheduler.step(global_token_count)
@@ -565,11 +588,11 @@ def train():
             log_tb('lr', current_lr)
             log_tb('lr_normalized1', current_lr / toscalar(batch_total))
             log_tb('lr_normalized2', current_lr / toscalar(total_tokens))
-            if args.optim == 'lamb':
-                log_lamb_rs(optimizer, event_writer, global_token_count)
+            #if args.optim == 'lamb':
+            #    log_lamb_rs(optimizer, event_writer, global_token_count)
 
             time_per_batch = elapsed_time / elapsed_steps
-            time_per_sample = time_per_batch / args.batch_size
+            time_per_sample = time_per_batch / current_batch_size
             time_per_token = time_per_sample / args.tgt_len
 
             log_tb('times/batches_per_sec', 1 / time_per_batch)
@@ -590,6 +613,15 @@ def train():
         if train_step % args.eval_interval == 0:
             evaluate(va_iter, 'val', train_step)
 
+        if global_token_count >= args.max_tokens:
+            logger.info('End of schedule, staying at current LR')
+            args.scheduler = 'constant'
+
+        # Start a new epoch early
+        if train_step in BATCH_SCHEDULE:
+            logger.info('Next batch schedule')
+            break
+
     if args.checkpoint_each_epoch:
         logger.info(f'Saving checkpoint for epoch {epoch}')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
@@ -604,14 +636,14 @@ def main():
     else:
         os.system('shutdown -c')
 
-    logger.info(
-        f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
-
-    dist.init_process_group(backend=args.dist_backend,
-                            init_method=args.dist_url,
-                            world_size=util.get_world_size())
-    assert (util.get_world_size() == dist.get_world_size())
-    logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
+    if args.distributed:
+        logger.info(
+            f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
+        dist.init_process_group(backend=args.dist_backend,
+                                init_method=args.dist_url,
+                                world_size=util.get_world_size())
+        assert (util.get_world_size() == dist.get_world_size())
+        logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
 
     model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
                              args.d_head, args.d_inner, args.dropout, args.dropatt,
@@ -627,6 +659,7 @@ def main():
     n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
     log_tb('sizes/non_emb_params', n_nonemb_param)
     logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
+
     # optimizer
     if args.optim.lower() == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.mom)
@@ -666,9 +699,8 @@ def main():
     if args.fp16:
         # If args.dynamic_loss_scale is False, static_loss_scale will be used.
         model = FP16_Module(model)
+        model.to(device)
 
-    model = model.to(device)
-    if args.fp16:
         # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
         optimizer = FP16_Optimizer(optimizer,
                                    static_loss_scale=args.static_loss_scale,
@@ -677,10 +709,11 @@ def main():
                                    verbose=False)
     model = model.to(device)
 
-    #    model = util.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
-    model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
-
-                                          
+    if args.distributed:
+        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model, dim=1).to(device)
+                                  
     logdir = args.logdir
     assert os.path.exists(logdir)
 
@@ -700,11 +733,17 @@ def main():
     train_loss = 0
     last_log_step = 0
     best_val_loss = None
+    va_iter, te_iter = [
+        corpus.get_dist_iterator(
+            split, global_rank, max_rank, args.batch_size * 2, args.tgt_len,
+            device=device, ext_len=args.ext_len)
+        for split in ('valid', 'test')
+    ]
 
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in itertools.count(start=1):
-            train()
+            train(va_iter)
     except KeyboardInterrupt:
         logger.info('-' * 100)
         logger.info('Exiting from training early')

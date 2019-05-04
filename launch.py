@@ -22,6 +22,8 @@ parser.add_argument('--skip_setup', action='store_true',
 
 parser.add_argument('--wiki', action='store_true',
                     help='Train on all of wikipedia.')
+parser.add_argument('--bpe', action='store_true',
+                    help='Use BPE to reduce vocab instead of adaptive softmax div')
 
 # network settings
 parser.add_argument('--num_rings', type=int, default=16)
@@ -81,8 +83,16 @@ one_machine_fp16 = {
     }
 }
 
+one_small_machine = {
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+}
+
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
-# Differences: fp16, bpe, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
+# Differences: fp16, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
 # logs: ben-large-lamb-slow
 one_machine_fp16_large = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
@@ -244,9 +254,8 @@ LARGE_ARGS = {
     'eval_tgt_len': 128,
     'fp16': True,
     'dynamic_loss_scale': True,
-    'bpe': True,
     'init_std': 0.005,
-    'div_val': 1,
+    'div_val': 4,
 }
 
 # Roughly match https://github.com/kimiyoung/transformer-xl/blob/master/pytorch/run_wt103_base.sh
@@ -275,7 +284,6 @@ def _get_nccl_params():
 
 def main():
     ncluster.set_backend('aws')
-    ncluster.set_logdir_root('/ncluster/runs')
 
     if args.config:
         assert not args.instance_type, "specify instance_type as part of config"
@@ -356,13 +364,19 @@ def main():
 
     if args.checkpoint or config.checkpoint:
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
-    
+
     if args.wiki:
         worker_params.update({
             'data': 'data/wikiextracted',
             'dataset': 'wiki',
             'dropatt': 0.1,
             'dropout': 0.1,
+        })
+
+    if args.bpe:
+        worker_params.update({
+            'div_val': 1,
+            'bpe': True,
         })
 
     worker_params.update(user_params)

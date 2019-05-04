@@ -194,6 +194,8 @@ class FP16_Optimizer(object):
                     if param.type() == 'torch.cuda.HalfTensor':
                         self.maybe_print("FP16_Optimizer received torch.cuda.HalfTensor with {}"
                                          .format(param.size()))
+                        if param.nelement() % 8 != 0:
+                            print(f'Warning: non-8 tensor with size {param.size()}')
                         fp16_params_this_group.append(param)
                         master_param = param.detach().clone().float()
                         master_param.requires_grad = True

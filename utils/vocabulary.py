@@ -1,4 +1,5 @@
 import contextlib
+import math
 import os
 from collections import Counter, OrderedDict
 
@@ -166,7 +167,8 @@ class Vocab:
             return ' '.join([self.get_sym(idx) for idx in indices if idx not in exclude])
 
     def __len__(self):
-        return len(self.idx2sym)
+        # Force a multiple of 8 for efficient CUDA.
+        return math.ceil(len(self.idx2sym) / 8) * 8
 
 class OpenAIVocab(Vocab):
     def __init__(self, max_size, vocab_file=None):
