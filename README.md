@@ -1,3 +1,4 @@
+## One machine
 Reproduce 21.5 perplexity on wikitext-103 after 2 hours 50 minutes and one machine with 180M Transformer-XL.
 ```
 aws configure
@@ -10,7 +11,7 @@ Command above will reserve p3dn instance, setup dependencies and start training.
 2. Call `launch_tensorboard.py` to spin up TensorBoard instance and look at the latest graphs that appeared.
 
 
-# Eight-machines
+## Several machines
 Reproduce 90 seconds per epoch on 180M Transformer-XL network and 8-machines.
 
 ```
@@ -18,7 +19,7 @@ python launch.py --config=eight_machines
 ```
 
 
-# Throughput tests
+## Throughput tests
 Training throughput numbers for 277M parameter Transformer-XL
 ```
 python launch.py --config=test_1    # 446  examples/sec
@@ -28,7 +29,7 @@ python launch.py --config=test_8    # 3574 examples/sec
 python launch.py --config=test_16   # 7148 examples/sec
 ```
 
-# Train locally on single GPU
+## Locally on single GPU
 
 Follow instructions on original Transformer-XL repo to [get data](https://github.com/kimiyoung/transformer-xl/tree/44781ed21dbaec88b280f74d9ae2877f52b492a5/pytorch#data-prepration) and put it under `data/wikitext-103`, then
 
@@ -37,9 +38,10 @@ bash single_machine.sh
 ```
 
 
-# Notes
+## Notes
 
 - These experiments automatically launch at spot instance prices. If you prefer to launch instances as on-demand , add `--nospot` flag to your launch.py command.
 
 - By default, instances stop automatically 10 minutes after completion or 60 minutes if error is detected. You could stop instances manually using `ncluster stop` command or terminate them with `ncluster kill` commands.
 
+- Use ncluster [command-line tool](https://github.com/yaroslavvb/ncluster#command-line-tool) to interact with your instances
