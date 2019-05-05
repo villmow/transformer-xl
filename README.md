@@ -1,41 +1,45 @@
-Train locally on single GPU
+Reproduce 21.5 perplexity on wikitext-103 after 2 hours 50 minutes and one machine with 180M Transformer-XL.
+```
+aws configure
+pip install -r requirements.txt
+python launch.py --config=one_machine
+```
+
+Command above will reserve p3dn instance, setup dependencies and start training. You can see what it's doing by doing one of:
+1. Connect to instance using ssh and attach to tmux session. (`ncluster mosh` does this automatically)
+2. Call `launch_tensorboard.py` to spin up TensorBoard instance and look at the latest graphs that appeared.
+
+
+# Eight-machines
+Reproduce 90 seconds per epoch on 180M Transformer-XL network and 8-machines.
+
+```
+python launch.py --config=eight_machines
+```
+
+
+# Throughput tests
+Training throughput numbers for 277M parameter Transformer-XL
+```
+python launch.py --config=test_1    # 446  examples/sec
+python launch.py --config=test_2    # 860  examples/sec
+python launch.py --config=test_4    # 1736 examples/sec
+python launch.py --config=test_8    # 3574 examples/sec
+python launch.py --config=test_16   # 7148 examples/sec
+```
+
+# Train locally on single GPU
+
+Follow instructions on original Transformer-XL repo to [get data](https://github.com/kimiyoung/transformer-xl/tree/44781ed21dbaec88b280f74d9ae2877f52b492a5/pytorch#data-prepration) and put it under `data/wikitext-103`, then
 
 ```
 bash single_machine.sh
 ```
 
 
-Train small network on AWS on 8-machines
-```
-pip install -r requirements.txt
-aws configure
-python launch.py --config=eight_machines
-```
+# Notes
 
-Reproduce 21.5 perplexity on wikitext-103 after 2 hours 50 minutes and one machine
-```
-python launch.py --config=one_machine
-```
+- These experiments automatically launch at spot instance prices. If you prefer to launch instances as on-demand , add `--nospot` flag to your launch.py command.
 
-# Throughput results
+- By default, instances stop automatically 10 minutes after completion or 60 minutes if error is detected. You could stop instances manually using `ncluster stop` command or terminate them with `ncluster kill` commands.
 
-To reproduce "44x faster" than original number
-
-90 seconds per epoch on 8-machines vs 3800 seconds originally
-```
-python launch.py --config=eight_machines
-```
-
-
-# To reproduce throughput numbers reported 
-
-```
-python launch.py --config=one_machine_large
-python launch.py --config=two_machines_large
-python launch.py --config=four_machines_large
-python launch.py --config=eight_machines_large
-python launch.py --config=sixteen_machines_large
-
-# update log directories in the file below
-python generate_throughput_numbers.py
-```

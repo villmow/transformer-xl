@@ -171,12 +171,11 @@ parser.add_argument('--local_rank', default=0, type=int,
                          'or automatically set by using \'python -m multiproc\'.')
 
 # infra flags
-# TODO(y): lower shutdown secs 10x again
 parser.add_argument('--skip_auto_shutdown', action='store_true',
                     help='skip shutdown at the end of training or failure')
-parser.add_argument('--auto_shutdown_success_delay_mins', default=100, type=int,
+parser.add_argument('--auto_shutdown_success_delay_mins', default=10, type=int,
                     help='how long to wait until shutting down on success')
-parser.add_argument('--auto_shutdown_failure_delay_mins', default=600, type=int,
+parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
 
 args = parser.parse_args()

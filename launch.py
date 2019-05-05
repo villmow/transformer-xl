@@ -97,7 +97,7 @@ eight_machines = {
 
 
 
-one_machine_large = {
+test_1 = {
     'base_lr': 0.000125 * 5 / 3,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 16,
@@ -106,7 +106,7 @@ one_machine_large = {
 }
 
 
-two_machines_large = {
+test_2 = {
     'base_lr': 0.000125 * 5 / 3,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 16,
@@ -116,7 +116,7 @@ two_machines_large = {
 
 
 # logs: /ncluster/runs/four.01
-four_machines_large = {
+test_4 = {
     'base_lr': 0.000125,
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 16,
@@ -125,7 +125,7 @@ four_machines_large = {
 }
 
 # logs: /ncluster/runs/eight.02/info.log
-eight_machines_large = {
+test_8 = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 16,
@@ -134,7 +134,7 @@ eight_machines_large = {
 }
 
 # logs: /ncluster/runs/sixteen.01/info.log
-sixteen_machines_large = {
+test_16 = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'batch_size': 16,
