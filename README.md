@@ -1,3 +1,8 @@
+# Scalable training of Transformer-XL
+
+Based on [original](https://github.com/kimiyoung/transformer-xl) Transformer-XL implementation.
+
+
 ## One machine
 Reproduce 21.5 perplexity on wikitext-103 after 2 hours 50 minutes and one machine with 180M Transformer-XL.
 ```
