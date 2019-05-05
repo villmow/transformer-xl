@@ -39,7 +39,7 @@ parser.add_argument('--run_name', type=str, default='txl', help="name of run")
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki'],
+                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki', 'wt103-normal'],
                     help='dataset name')
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
@@ -204,7 +204,6 @@ current_batch_size = args.batch_size
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
 max_rank = util.get_world_size()
-torch.cuda.set_device(args.local_rank)
 
 # break into PDB debugger on exception
 #if global_rank == 0:
@@ -348,8 +347,10 @@ np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(args.seed)
+    torch.cuda.set_device(args.local_rank)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 ###############################################################################
 # Load data
@@ -576,7 +577,9 @@ def train(va_iter):
         train_step += 1
 
         # step-wise learning rate annealing
-        if not (args.fp16 and optimizer.overflow):
+        if args.fp16 and optimizer.overflow:
+            logger.info("skipped iteration")
+        else:
             if args.scheduler in ['cosine', 'constant', 'dev_perf']:
                 # linear warmup stage
                 if global_token_count < args.warmup_tokens:
@@ -586,8 +589,7 @@ def train(va_iter):
                         scheduler.step(global_token_count)
             else:
                 scheduler.step(global_token_count)
-        else:
-            logger.info("skipped iteration")
+
 
         if should_log:
             elapsed_time = time.time() - log_start_time
@@ -609,12 +611,13 @@ def train(va_iter):
             log_tb('loss/ppl', math.exp(cur_loss))
             log_tb('times/step', 1000 * elapsed_time / elapsed_steps)
             current_lr = optimizer.param_groups[0]['lr']
-            log_tb('lr', current_lr)
-            log_tb('lr_normalized1', current_lr / toscalar(batch_total))
-            log_tb('lr_normalized2', current_lr / toscalar(total_tokens))
+            log_tb('lr/lr', current_lr)
+            log_tb('lr/normalized_batch', current_lr / toscalar(batch_total))
+            log_tb('lr/normalized_tokens', current_lr / toscalar(total_tokens))
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
-                log_SNR(optimizer, event_writer, global_token_count)
+            # This didn't provide any insight, so commented out for now.
+            # log_SNR(optimizer, event_writer, global_token_count)
 
             time_per_batch = elapsed_time / elapsed_steps
             time_per_sample = time_per_batch / current_batch_size
@@ -639,7 +642,9 @@ def train(va_iter):
             evaluate(va_iter, 'val', train_step)
 
         if global_token_count >= args.max_tokens:
+            logger.info('=' * 100)
             logger.info('End of schedule, staying at current LR')
+            logger.info('=' * 100)
             args.scheduler = 'constant'
 
         # Start a new epoch early
