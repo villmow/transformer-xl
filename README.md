@@ -1,6 +1,6 @@
 # Scalable training of Transformer-XL
 
-Based on [original](https://github.com/kimiyoung/transformer-xl) Transformer-XL implementation.
+Extending [Transformer-XL](https://github.com/kimiyoung/transformer-xl) for distributed training.
 
 
 ## One machine
