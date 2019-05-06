@@ -191,14 +191,10 @@ args.tied = not args.not_tied
 
 # global variables
 global_timeit_dict = OrderedDict()
-global_example_count = 0
 global_token_count = 0
 event_writer = util.NoOp()
-logdir = None
 epoch = 0
 train_step = 0
-optimizer = None
-scheduler = None
 current_batch_size = args.batch_size
 
 local_rank = args.local_rank
@@ -225,29 +221,13 @@ max_rank = util.get_world_size()
 #         8000: 80,
 #         9600: 96,
 #     }
-if args.batch_size == 16:  # large model
-    BATCH_SCHEDULE = {
-        0: 2,
-        1000: 3,
-        1500: 4,
-        2000: 5,
-        2500: 6,
-        3000: 8,
-        4000: 10,
-        5000: 12,
-        5500: 13,
-        6000: 14,
-        6500: 15,
-        7000: 16,
-    }
-else:
-    BATCH_SCHEDULE = {}
+BATCH_SCHEDULE = {}
 
 class FileLogger:
     def __init__(self, output_dir: str, global_rank: int, local_rank: int):
         self.output_dir = output_dir
-        if not os.path.exists(self.output_dir) and global_rank == 0:
-            os.makedirs(self.output_dir)
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir, exist_ok=True)
         self.logger = FileLogger.get_logger(output_dir, global_rank=global_rank, local_rank=local_rank)
 
     def exception(self, *args_, **kwargs):
@@ -316,7 +296,7 @@ class timeit:
 
 
 def log_tb(tag, val):
-    """Log value to tensorboard (relies on global_example_count rather than step count to give comparable graphs across
+    """Log value to tensorboard (relies on global_token_count rather than step count to give comparable graphs across
     batch sizes)"""
     global global_token_count, event_writer
     event_writer.add_scalar(tag, val, global_token_count)
@@ -429,10 +409,10 @@ def weights_init(m):
 
 
 # todo(y): move into main()
-logger.info("Torch version: {}".format(torch.__version__))
+logger.info(f"Torch version: {torch.__version__)}")
 logger.info('=' * 100)
 for k, v in args.__dict__.items():
-    logger.info('    - {} : {}'.format(k, v))
+    logger.info(f'    - {k} : {v}')
 logger.info('=' * 100)
 
 def log_SNR(optimizer: optim.Optimizer, event_writer: SummaryWriter, token_count: int):
@@ -467,7 +447,7 @@ def evaluate(eval_iter, split, train_step=-1):
         if isinstance(module, MemTransformerLM):
             return module
         return unwrap(module.module)
-        
+
     model_to_reset = unwrap(model)
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
@@ -477,7 +457,7 @@ def evaluate(eval_iter, split, train_step=-1):
     else:
         model_to_reset.reset_length(
             args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
-  
+
     # Evaluation
     total_len, total_loss = 0, 0.
     with torch.no_grad():
@@ -522,9 +502,9 @@ def evaluate(eval_iter, split, train_step=-1):
         best_val_loss = mean_loss
 
 
-def train(va_iter):
-    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, \
-        train_step, last_log_step, epoch, optimizer, scheduler, current_batch_size
+def train(va_iter, optimizer, scheduler):
+    global global_token_count, event_writer, train_loss, best_val_loss, \
+        train_step, last_log_step, epoch, current_batch_size
     # Turn on training mode which enables dropout.
     model.train()
 
@@ -586,7 +566,7 @@ def train(va_iter):
                     curr_lr = args.lr * global_token_count / args.warmup_tokens
                     optimizer.param_groups[0]['lr'] = curr_lr
                 elif args.scheduler == 'cosine':
-                        scheduler.step(global_token_count)
+                    scheduler.step(global_token_count)
             else:
                 scheduler.step(global_token_count)
 
@@ -597,14 +577,12 @@ def train(va_iter):
 
             # compute average loss over last logging interval
             cur_loss = train_loss / elapsed_steps
-            log_str = '| epoch {:3d} step {:>8d} | {:>6d} batches | lr {:.3g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(epoch, train_step, batch + 1,
-                                                                 optimizer.param_groups[0]['lr'],
-                                                                 elapsed_time * 1000 / elapsed_steps, cur_loss)
+            log_str = f'| epoch {epoch:3d} step {train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
+                      f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
             if args.dataset in ['enwik8', 'text8']:
-                log_str += ' | bpc {:9.5f}'.format(cur_loss / math.log(2))
+                log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
             else:
-                log_str += ' | ppl {:9.3f}'.format(math.exp(cur_loss))
+                log_str += f' | ppl {math.exp(cur_loss):9.3f}'
             logger.info(log_str)
             log_tb('loss/epoch', epoch)
             log_tb('loss/loss', cur_loss)
@@ -612,8 +590,8 @@ def train(va_iter):
             log_tb('times/step', 1000 * elapsed_time / elapsed_steps)
             current_lr = optimizer.param_groups[0]['lr']
             log_tb('lr/lr', current_lr)
-            log_tb('lr/normalized_batch', current_lr / toscalar(batch_total))
-            log_tb('lr/normalized_tokens', current_lr / toscalar(total_tokens))
+            log_tb('lr/batch_normalized', current_lr / toscalar(batch_total))
+            log_tb('lr/token_normalized', current_lr / toscalar(total_tokens))
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
             # This didn't provide any insight, so commented out for now.
@@ -658,8 +636,8 @@ def train(va_iter):
 
 
 def main():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, \
-        best_val_loss, epoch, model, optimizer, scheduler
+    global global_token_count, event_writer, train_step, train_loss, last_log_step, \
+        best_val_loss, epoch, model
 
     if args.local_rank > 0:
         pass  # skip shutdown when rank is explicitly set + not zero rank
@@ -673,7 +651,7 @@ def main():
                                 init_method=args.dist_url,
                                 world_size=util.get_world_size())
         assert (util.get_world_size() == dist.get_world_size())
-        logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
+        logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
     model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
                              args.d_head, args.d_inner, args.dropout, args.dropatt,
@@ -715,7 +693,6 @@ def main():
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
-
     if args.checkpoint:
         #        util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
         if global_rank == 0:
@@ -725,7 +702,6 @@ def main():
         #     opt_state_dict = torch.load(f)
         #     optimizer.load_state_dict(opt_state_dict)
 
-    
     if args.fp16:
         # If args.dynamic_loss_scale is False, static_loss_scale will be used.
         model = FP16_Module(model)
@@ -743,12 +719,9 @@ def main():
         model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
     else:
         model = nn.DataParallel(model, dim=1).to(device)
-                                  
-    logdir = args.logdir
-    assert os.path.exists(logdir)
 
     if global_rank == 0 and not args.debug:
-        event_writer = SummaryWriter(logdir)
+        event_writer = SummaryWriter(args.logdir)
 
     log_tb("first", time.time())
     event_writer.add_text('args', str(args))
@@ -773,7 +746,7 @@ def main():
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in itertools.count(start=1):
-            train(va_iter)
+            train(va_iter, optimizer, scheduler)
     except KeyboardInterrupt:
         logger.info('-' * 100)
         logger.info('Exiting from training early')
