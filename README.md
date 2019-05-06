@@ -2,6 +2,8 @@
 
 Extending [Transformer-XL](https://github.com/kimiyoung/transformer-xl) for distributed training.
 
+<img src="https://raw.githubusercontent.com/cybertronai/transformer-xl/master/scaling.png">
+
 
 ## One machine
 Reproduce 21.5 perplexity on wikitext-103 after 2 hours 50 minutes and one machine with 180M Transformer-XL.
