@@ -230,10 +230,11 @@ class Corpus:
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
         elif self.dataset == 'wiki':
-            # Take the first and second file of each alphabetical directory for train and test.
-            self.valid = [x for x in file_paths if x.endswith('00.txt')]
-            self.test = [x for x in file_paths if x.endswith('01.txt')]
-            self.train = list(set(file_paths) - set(self.valid) - set(self.test))
+            valid_path = sorted(file_paths)[42]
+            test_path = sorted(file_paths)[1337]
+            self.valid = self.vocab.encode_file(valid_path, ordered=True)
+            self.test = self.vocab.encode_file(test_path, ordered=True)
+            self.train = list(set(file_paths) - set((valid_path, test_path)))
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'wiki.train.tokens'), ordered=True, add_eos=False)
@@ -242,16 +243,17 @@ class Corpus:
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
 
-    def get_dist_iterator(self, split, rank, max_rank, *args, **kwargs):
+    def get_dist_iterator(self, split: str, rank: int, max_rank: int, *args, **kwargs):
         """Get an iterator that only operates on rank//max_rank independent subset of the data."""
         data = self.__getattribute__(split)
         subset = list(chunk(data, max_rank))[rank]
         if self.dataset in ['lm1b', 'wiki']:
-            return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
+            if split == 'train':
+                return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
         
         return LMOrderedIterator(subset, *args, **kwargs)
 
-    def get_iterator(self, split, *args, **kwargs):
+    def get_iterator(self, split: str, *args, **kwargs):
         """Get an iterator over the corpus.
 
         Each next() returns (data, target, seq_length).
@@ -260,14 +262,16 @@ class Corpus:
         data = self.__getattribute__(split)
         if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
             return LMOrderedIterator(data, *args, **kwargs)
-        elif self.dataset == 'lm1b':
+        if self.dataset == 'lm1b':
             if split in ['valid', 'test']:
                 return LMShuffledIterator(data, *args, **kwargs)
-            else:
-                kwargs['shuffle'] = True
-                return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
-        elif self.dataset == 'wiki':
+            
+            kwargs['shuffle'] = True
             return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
+        if self.dataset == 'wiki':
+            if split == 'train':
+                return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
+            return LMOrderedIterator(data, *args, **kwargs)
 
 
 def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> Corpus:
@@ -278,7 +282,8 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
         dataset: eg 'wt103' which tells the Corpus how to parse the data.
     """
     cache_filepath = os.path.join(datadir, 'cache.pt.bpe' if use_bpe else 'cache.pt')
-    if os.path.exists(cache_filepath):
+    # Don't cache dataset for wiki, it's just a file list.
+    if os.path.exists(cache_filepath) and dataset != 'wiki':
         print('Loading cached dataset...')
         corpus = torch.load(cache_filepath)
     else:
@@ -319,15 +324,19 @@ def main():
     parser.add_argument('--dataset', type=str, default='text8',
                         choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal', 'wiki'],
                         help='dataset name')
+    parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
     corpus = get_lm_corpus(args.datadir, args.dataset, use_bpe=True)
     print(f'Vocab size : {len(corpus.vocab)}')
     #tr_iter = corpus.get_iterator('train', 16, 150, 'cpu', ext_len=0)
-    tr_iter = corpus.get_dist_iterator('train', rank=0, max_rank=10, bsz=16, bptt=150, device='cpu', ext_len=0)
-    for data, target, seq_len in tr_iter:
-        print(data.shape, target.shape, seq_len, len(list(tr_iter)))
-        break
+    # Loop through all the data to force caching.
+    for split in ('train', 'valid', 'test'):
+        tr_iter = corpus.get_dist_iterator(split, rank=0, max_rank=1, bsz=16, bptt=150, device='cpu', ext_len=0)
+        for data, target, seq_len in tr_iter:
+            if args.debug:
+                print(data.shape, target.shape, seq_len, len(list(tr_iter)))
+                break
 
 if __name__ == '__main__':
     main()
