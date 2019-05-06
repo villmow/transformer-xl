@@ -28,6 +28,7 @@ from data_utils import get_lm_corpus
 from mem_transformer import MemTransformerLM
 from lr_finder import LRFinder
 from pytorch_lamb import Lamb, log_lamb_rs
+from eval import evaluate
 
 from util import toscalar
 import util
@@ -126,9 +127,6 @@ parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
 
-# todo(y): replace work_dir with logdir
-parser.add_argument('--work_dir', default=None, type=str,
-                    help='Experiment directory. Defaults to logdir')
 parser.add_argument('--restart', action='store_true',
                     help='restart training from the saved checkpoint')
 parser.add_argument('--restart_dir', type=str, default='',
@@ -200,10 +198,6 @@ current_batch_size = args.batch_size
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
 max_rank = util.get_world_size()
-
-# break into PDB debugger on exception
-#if global_rank == 0:
-#    util.pdb_on_error()
 
 # At the given batch index, use the given training batch size.
 # TODO: make this an arg
@@ -317,9 +311,6 @@ if args.d_embed < 0:
 
 assert args.ext_len >= 0, 'extended context length must be non-negative'
 
-if not args.work_dir:
-    args.work_dir = args.logdir
-
 logger = FileLogger(args.logdir, global_rank=global_rank, local_rank=local_rank)
 
 # Set the random seed manually for reproducibility.
@@ -409,7 +400,7 @@ def weights_init(m):
 
 
 # todo(y): move into main()
-logger.info(f"Torch version: {torch.__version__)}")
+logger.info(f"Torch version: {torch.__version__}")
 logger.info('=' * 100)
 for k, v in args.__dict__.items():
     logger.info(f'    - {k} : {v}')
@@ -436,11 +427,9 @@ def log_SNR(optimizer: optim.Optimizer, event_writer: SummaryWriter, token_count
 ###############################################################################
 
 
-def evaluate(eval_iter, split, train_step=-1):
+def evaluate_and_log(eval_iter, split, train_step=-1):
     global best_val_loss
     eval_start_time = time.time()
-    # Turn on evaluation mode which disables dropout.
-    model.eval()
 
     # Have to unwrap twice: DDP & FP16
     def unwrap(module):
@@ -458,21 +447,7 @@ def evaluate(eval_iter, split, train_step=-1):
         model_to_reset.reset_length(
             args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
 
-    # Evaluation
-    total_len, total_loss = 0, 0.
-    with torch.no_grad():
-        mems = tuple()
-        bar = tqdm.tqdm(eval_iter, leave=False, desc="Eval")
-        for i, (data, target, seq_len) in enumerate(bar):
-            if args.max_eval_steps > 0:
-                if i >= args.max_eval_steps:
-                    break
-            ret = model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
-            loss = loss.mean()
-            bar.set_description(f'Eval loss {loss:.2f}')
-            total_loss += seq_len * loss.float().item()
-            total_len += seq_len
+    total_loss, total_len = evaluate(model, eval_iter, split, args.max_eval_steps)
 
     # Switch back to the training mode
     model_to_reset.reset_length(args.tgt_len, args.ext_len, args.mem_len)
@@ -617,12 +592,10 @@ def train(va_iter, optimizer, scheduler):
             last_log_step = train_step
 
         if train_step % args.eval_interval == 0:
-            evaluate(va_iter, 'val', train_step)
+            evaluate_and_log(va_iter, 'val', train_step)
 
         if global_token_count >= args.max_tokens:
-            logger.info('=' * 100)
             logger.info('End of schedule, staying at current LR')
-            logger.info('=' * 100)
             args.scheduler = 'constant'
 
         # Start a new epoch early
@@ -754,11 +727,11 @@ def main():
         pass
 
     # Eval one more time.
-    evaluate(va_iter, 'val', train_step=-1)
+    evaluate_and_log(va_iter, 'val', train_step=-1)
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
-    model_file = os.path.join(args.work_dir, 'model-best.pt')
+    model_file = os.path.join(args.logdir, 'model-best.pt')
     if os.path.exists(model_file):
         with open(model_file, 'rb') as model_f:
             with timeit('load'):
@@ -771,7 +744,7 @@ def main():
         logger.warn('no model file, using current model for loss')
 
     # Run on test data.
-    evaluate(te_iter, 'test', -1)
+    evaluate_and_log(te_iter, 'test', -1)
 
 
 if __name__ == '__main__':
