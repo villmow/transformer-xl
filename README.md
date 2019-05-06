@@ -32,8 +32,8 @@ Training throughput numbers for 277M parameter Transformer-XL
 python launch.py --config=test_1    # 446  examples/sec
 python launch.py --config=test_2    # 860  examples/sec
 python launch.py --config=test_4    # 1736 examples/sec
-python launch.py --config=test_8    # 3574 examples/sec
-python launch.py --config=test_16   # 7148 examples/sec
+python launch.py --config=test_8    # 3031 examples/sec
+python launch.py --config=test_16   # 5904 examples/sec
 ```
 
 ## Locally on single GPU
