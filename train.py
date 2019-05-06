@@ -1,6 +1,7 @@
 # coding: utf-8
 #
 import argparse
+import collections
 import datetime
 import itertools
 import logging
@@ -27,6 +28,7 @@ from data_utils import get_lm_corpus
 from mem_transformer import MemTransformerLM
 from lr_finder import LRFinder
 from pytorch_lamb import Lamb, log_lamb_rs
+from eval import evaluate
 
 import util
 
@@ -37,7 +39,7 @@ parser.add_argument('--run_name', type=str, default='txl', help="name of run")
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki'],
+                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki', 'wt103-normal'],
                     help='dataset name')
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
@@ -163,6 +165,7 @@ parser.add_argument('--dynamic_loss_scale', action='store_true',
                          ' supersedes --static-loss-scale.')
 
 # distributed training flags
+parser.add_argument('--local', action='store_true', help='Run local training instead of distrbuted.')
 parser.add_argument('--dist_url', default='env://', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist_backend', default='nccl', type=str, help='distributed backend')
@@ -183,66 +186,50 @@ args.tied = not args.not_tied
 
 # global variables
 global_timeit_dict = OrderedDict()
-global_example_count = 0
 global_token_count = 0
 event_writer = util.NoOp()
-logdir = None
 epoch = 0
 train_step = 0
-optimizer = None
-scheduler = None
 
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
 max_rank = util.get_world_size()
-torch.cuda.set_device(args.local_rank)
-
-# break into PDB debugger on exception
-if global_rank == 0:
-    util.pdb_on_error()
-
 
 class FileLogger:
-    def __init__(self, output_dir: str, is_master=False, is_rank0=False):
+    def __init__(self, output_dir: str, global_rank: int, local_rank: int):
         self.output_dir = output_dir
         if not os.path.exists(self.output_dir):
-            if global_rank == 0:
-                os.makedirs(self.output_dir)
-        # only log on one process per node
-        if is_rank0:
-            self.logger = FileLogger.get_logger(output_dir, log_to_file=is_master)
-        else:
-            self.logger = util.NoOp()
+            os.makedirs(self.output_dir, exist_ok=True)
+        self.logger = FileLogger.get_logger(output_dir, global_rank=global_rank, local_rank=local_rank)
 
     def exception(self, *args_, **kwargs):
         return self.logger.exception(*args_, **kwargs)
 
     @staticmethod
-    def get_logger(output_dir: str, log_to_file: bool = True):
+    def get_logger(output_dir: str, global_rank: int, local_rank: int):
         logger_ = logging.getLogger('txl training')
         logger_.setLevel(logging.DEBUG)
         formatter = logging.Formatter('%(message)s')
 
-        if log_to_file:
-            vlog = logging.FileHandler(output_dir + '/info.log')
-            vlog.setLevel(logging.INFO)
-            vlog.setFormatter(formatter)
-            logger_.addHandler(vlog)
+        vlog = logging.FileHandler(output_dir + f'/info-{global_rank}.log')
+        vlog.setLevel(logging.INFO)
+        vlog.setFormatter(formatter)
+        logger_.addHandler(vlog)
 
-            eventlog = logging.FileHandler(output_dir + '/warn.log')
-            eventlog.setLevel(logging.WARN)
-            eventlog.setFormatter(formatter)
-            logger_.addHandler(eventlog)
+        eventlog = logging.FileHandler(output_dir +  f'/warn-{global_rank}.log')
+        eventlog.setLevel(logging.WARN)
+        eventlog.setFormatter(formatter)
+        logger_.addHandler(eventlog)
 
-            time_formatter = logging.Formatter('%(asctime)s - %(filename)s:%(lineno)d - %(message)s')
-            debuglog = logging.FileHandler(output_dir + '/debug.log')
-            debuglog.setLevel(logging.DEBUG)
-            debuglog.setFormatter(time_formatter)
-            logger_.addHandler(debuglog)
+        time_formatter = logging.Formatter('%(asctime)s - %(filename)s:%(lineno)d - %(message)s')
+        debuglog = logging.FileHandler(output_dir + f'/debug-{global_rank}.log')
+        debuglog.setLevel(logging.DEBUG)
+        debuglog.setFormatter(time_formatter)
+        logger_.addHandler(debuglog)
 
         console = logging.StreamHandler()
         console.setFormatter(formatter)
-        console.setLevel(logging.DEBUG)
+        console.setLevel(logging.DEBUG if local_rank == 0 else logging.WARN)
         logger_.addHandler(console)
         return logger_
 
@@ -281,7 +268,7 @@ class timeit:
 
 
 def log_tb(tag, val):
-    """Log value to tensorboard (relies on global_example_count rather than step count to give comparable graphs across
+    """Log value to tensorboard (relies on global_token_count rather than step count to give comparable graphs across
     batch sizes)"""
     global global_token_count, event_writer
     event_writer.add_scalar(tag, val, global_token_count)
@@ -302,13 +289,14 @@ if args.d_embed < 0:
 
 assert args.ext_len >= 0, 'extended context length must be non-negative'
 
-logger = FileLogger(args.logdir, is_master=(global_rank == 0), is_rank0=(args.local_rank == 0))
+logger = FileLogger(args.logdir, global_rank=global_rank, local_rank=local_rank)
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(args.seed)
+    torch.cuda.set_device(args.local_rank)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -318,14 +306,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 corpus = get_lm_corpus(args.data, args.dataset, use_bpe=args.bpe)
 ntokens = len(corpus.vocab)
 args.n_token = ntokens
-
-eval_batch_size = args.batch_size * 2
-tr_iter, va_iter, te_iter = [
-    corpus.get_dist_iterator(
-        split, global_rank, max_rank, args.batch_size, args.tgt_len,
-        device=device, ext_len=args.ext_len)
-    for split in ('train', 'valid', 'test')
-]
 
 # adaptive softmax / embedding
 cutoffs, tie_projs = [], [False]
@@ -396,10 +376,10 @@ def weights_init(m):
             init_bias(m.r_bias)
 
 
-logger.info("Torch version: {}".format(torch.__version__))
+logger.info(f"Torch version: {torch.__version__}")
 logger.info('=' * 100)
 for k, v in args.__dict__.items():
-    logger.info('    - {} : {}'.format(k, v))
+    logger.info(f'    - {k} : {v}')
 logger.info('=' * 100)
 
 
@@ -408,14 +388,17 @@ logger.info('=' * 100)
 ###############################################################################
 
 
-def evaluate(eval_iter, split, train_step=-1):
+def evaluate_and_log(eval_iter, split, train_step=-1):
     global best_val_loss
     eval_start_time = time.time()
-    # Turn on evaluation mode which disables dropout.
-    model.eval()
 
-    # Have to unwrap twice: DDP & FP16
-    model_to_reset = model.module.module if args.fp16 else model.module
+    # Have to unwrap DDP & FP16, if using.
+    def unwrap(module):
+        if isinstance(module, MemTransformerLM):
+            return module
+        return unwrap(module.module)
+
+    model_to_reset = unwrap(model)
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
     if args.mem_len == 0:
@@ -425,21 +408,7 @@ def evaluate(eval_iter, split, train_step=-1):
         model_to_reset.reset_length(
             args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
 
-    # Evaluation
-    total_len, total_loss = 0, 0.
-    with torch.no_grad():
-        mems = tuple()
-        bar = tqdm.tqdm(eval_iter, leave=False, desc="Eval")
-        for i, (data, target, seq_len) in enumerate(bar):
-            if args.max_eval_steps > 0:
-                if i >= args.max_eval_steps:
-                    break
-            ret = model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
-            loss = loss.mean()
-            bar.set_description(f'Eval loss {loss:.2f}')
-            total_loss += seq_len * loss.float().item()
-            total_len += seq_len
+    total_loss, total_len = evaluate(model, eval_iter, split, args.max_eval_steps)
 
     # Switch back to the training mode
     model_to_reset.reset_length(args.tgt_len, args.ext_len, args.mem_len)
@@ -467,15 +436,18 @@ def evaluate(eval_iter, split, train_step=-1):
         best_val_loss = mean_loss
 
 
-def train():
-    global global_example_count, global_token_count, event_writer, logdir, train_loss, best_val_loss, \
-        train_step, last_log_step, epoch, optimizer, scheduler
+def train(va_iter, optimizer, scheduler):
+    global global_token_count, event_writer, train_loss, best_val_loss, \
+        train_step, last_log_step, epoch
     # Turn on training mode which enables dropout.
     model.train()
 
     log_tb('sizes/batch_size', args.batch_size)
     log_tb('sizes/seq_size', args.tgt_len)
 
+    tr_iter = corpus.get_dist_iterator(
+        'train', global_rank, max_rank, args.batch_size, args.tgt_len,
+        device=device, ext_len=args.ext_len)
     mems = tuple()
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(tr_iter):
@@ -486,8 +458,11 @@ def train():
 
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)  # needed for NCCL sync
-        batch_total = util.dist_sum_tensor(batch_total)  # global batch size
-        batch_total = util.toscalar(batch_total)
+        if args.local:
+            batch_total = batch_total.sum()
+        else:
+            batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+            batch_total = util.toscalar(batch_total)
 
         total_tokens = batch_total * seq_len
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
@@ -511,22 +486,22 @@ def train():
 
         optimizer.step()
 
-        # step-wise learning rate annealing
         train_step += 1
 
-        if not (args.fp16 and optimizer.overflow):
+        # step-wise learning rate annealing
+        if args.fp16 and optimizer.overflow:
+            logger.info("skipped iteration")
+        else:
             if args.scheduler in ['cosine', 'constant', 'dev_perf']:
                 # linear warmup stage
                 if global_token_count < args.warmup_tokens:
                     curr_lr = args.lr * global_token_count / args.warmup_tokens
                     optimizer.param_groups[0]['lr'] = curr_lr
-                else:
-                    if args.scheduler == 'cosine':
-                        scheduler.step(global_token_count)
+                elif args.scheduler == 'cosine':
+                    scheduler.step(global_token_count)
             else:
                 scheduler.step(global_token_count)
-        else:
-            pass
+
 
         if should_log:
             elapsed_time = time.time() - log_start_time
@@ -534,14 +509,12 @@ def train():
 
             # compute average loss over last logging interval
             cur_loss = train_loss / elapsed_steps
-            log_str = '| epoch {:3d} step {:>8d} | {:>6d} batches | lr {:.3g} ' \
-                      '| ms/batch {:5.2f} | loss {:5.2f}'.format(epoch, train_step, batch + 1,
-                                                                 optimizer.param_groups[0]['lr'],
-                                                                 elapsed_time * 1000 / elapsed_steps, cur_loss)
+            log_str = f'| epoch {epoch:3d} step {train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
+                      f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
             if args.dataset in ['enwik8', 'text8']:
-                log_str += ' | bpc {:9.5f}'.format(cur_loss / math.log(2))
+                log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
             else:
-                log_str += ' | ppl {:9.3f}'.format(math.exp(cur_loss))
+                log_str += f' | ppl {math.exp(cur_loss):9.3f}'
             logger.info(log_str)
             log_tb('learning/epoch', epoch)
             log_tb('_loss', cur_loss)  # the most important thing
@@ -581,12 +554,11 @@ def train():
             last_log_step = train_step
 
         if train_step % args.eval_interval == 0:
-            evaluate(va_iter, 'val', train_step)
+            evaluate_and_log(va_iter, 'val', train_step)
 
         if global_token_count >= args.max_tokens:
-            logger.info('-' * 100)
-            logger.info('End of training')
-            raise StopIteration()
+            logger.info('End of schedule, staying at current LR')
+            args.scheduler = 'constant'
 
     if args.checkpoint_each_epoch:
         logger.info(f'Saving checkpoint for epoch {epoch}')
@@ -594,22 +566,22 @@ def train():
 
 
 def main():
-    global global_example_count, global_token_count, event_writer, logdir, train_step, train_loss, last_log_step, \
-        best_val_loss, epoch, model, optimizer, scheduler
+    global global_token_count, event_writer, train_step, train_loss, last_log_step, \
+        best_val_loss, epoch, model
 
     if args.local_rank > 0:
         pass  # skip shutdown when rank is explicitly set + not zero rank
     else:
         os.system('shutdown -c')
 
-    logger.info(
-        f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
-
-    dist.init_process_group(backend=args.dist_backend,
-                            init_method=args.dist_url,
-                            world_size=util.get_world_size())
-    assert (util.get_world_size() == dist.get_world_size())
-    logger.info("Distributed: success (%d/%d)" % (args.local_rank, dist.get_world_size()))
+    if not args.local:
+        logger.info(
+            f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
+        dist.init_process_group(backend=args.dist_backend,
+                                init_method=args.dist_url,
+                                world_size=util.get_world_size())
+        assert (util.get_world_size() == dist.get_world_size())
+        logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
     model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
                              args.d_head, args.d_inner, args.dropout, args.dropatt,
@@ -625,6 +597,7 @@ def main():
     n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
     log_tb('sizes/non_emb_params', n_nonemb_param)
     logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
+
     # optimizer
     if args.optim.lower() == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.mom)
@@ -660,13 +633,14 @@ def main():
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=False)
-    model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
-    logdir = args.logdir
-    assert os.path.exists(logdir)
+    if args.local:
+        model = nn.DataParallel(model, dim=1)
+    else:
+        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
 
     if global_rank == 0:
-        event_writer = SummaryWriter(logdir)
+        event_writer = SummaryWriter(args.logdir)
 
     event_writer.add_text('args', str(args))
 
@@ -680,11 +654,17 @@ def main():
     train_loss = 0
     last_log_step = 0
     best_val_loss = None
+    va_iter, te_iter = [
+        corpus.get_dist_iterator(
+            split, global_rank, max_rank, args.batch_size * 2, args.tgt_len,
+            device=device, ext_len=args.ext_len)
+        for split in ('valid', 'test')
+    ]
 
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in itertools.count(start=1):
-            train()
+            train(va_iter, optimizer, scheduler)
     except KeyboardInterrupt:
         logger.info('-' * 100)
         logger.info('Exiting from training early')
@@ -692,7 +672,7 @@ def main():
         pass
 
     # Eval one more time.
-    evaluate(va_iter, 'val', train_step=-1)
+    evaluate_and_log(va_iter, 'val', train_step=-1)
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
@@ -709,7 +689,7 @@ def main():
         logger.warn('no model file, using current model for loss')
 
     # Run on test data.
-    evaluate(te_iter, 'test', -1)
+    evaluate_and_log(te_iter, 'test', -1)
 
 
 if __name__ == '__main__':
