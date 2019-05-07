@@ -1,6 +1,6 @@
 # Scalable training of Transformer-XL
 
-Extending [Transformer-XL](https://github.com/kimiyoung/transformer-xl) for distributed training.
+Extending [Transformer-XL](https://github.com/kimiyoung/transformer-xl) for distributed training. (medium [post](https://medium.com/south-park-commons/scaling-transformer-xl-to-128-gpus-85849508ec35))
 
 <img src="https://raw.githubusercontent.com/cybertronai/transformer-xl/master/scaling.png">
 
