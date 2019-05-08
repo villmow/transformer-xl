@@ -308,6 +308,7 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
 
     return corpus
 
+
 def chunk(a: list, n: int):
     """Split `a` into `n` chunks, with the last bucket taking the remaining.
     
@@ -316,13 +317,14 @@ def chunk(a: list, n: int):
     k, m = divmod(len(a), n)
     return (a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
 
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='unit test')
-    parser.add_argument('--datadir', type=str, default='../data/text8',
+    parser.add_argument('--datadir', type=str, default='../data/german-wiki-fr-gutenberg',
                         help='location of the data corpus')
-    parser.add_argument('--dataset', type=str, default='text8',
-                        choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal', 'wiki'],
+    parser.add_argument('--dataset', type=str, default='ger-wiki',
+                        choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal', 'wiki', 'ger-wiki'],
                         help='dataset name')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
@@ -337,6 +339,7 @@ def main():
             if args.debug:
                 print(data.shape, target.shape, seq_len, len(list(tr_iter)))
                 break
+
 
 if __name__ == '__main__':
     main()
