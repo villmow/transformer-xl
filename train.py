@@ -37,7 +37,7 @@ parser.add_argument('--run_name', type=str, default='txl', help="name of run")
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki'],
+                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki', 'ger-wiki'],
                     help='dataset name')
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
@@ -331,7 +331,7 @@ tr_iter, va_iter, te_iter = [
 # adaptive softmax / embedding
 cutoffs, tie_projs = [], [False]
 if args.adaptive:
-    assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki']
+    assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki', 'ger-wiki']
     if args.dataset in ('wt103', 'wt2', 'wiki'):
         if args.bpe:
             cutoffs = [5000, 10000, 40000]
@@ -341,6 +341,9 @@ if args.adaptive:
     elif args.dataset == 'lm1b':
         cutoffs = [60000, 100000, 640000]
         tie_projs += [False] * len(cutoffs)
+    elif args.dataset == 'ger-wiki':
+        cutoffs = [5000, 10000, 40000]
+        tie_projs += [True] * len(cutoffs)
 
 
 ###############################################################################
