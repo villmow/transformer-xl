@@ -128,6 +128,7 @@ parser.add_argument('--restart', action='store_true',
                     help='restart training from the saved checkpoint')
 parser.add_argument('--restart_dir', type=str, default='',
                     help='restart dir')
+
 parser.add_argument('--same_length', action='store_true',
                     help='use the same attn length for all tokens')
 parser.add_argument('--attn_type', type=int, default=0,

@@ -72,6 +72,7 @@ def format_log(args, loss, total, split):
         special = f'ppl {math.exp(loss/total):9.3f}'
     return f'| {split} loss\t{loss/total:5.4f} | {split}\t{special}\tloss {loss:.1f}\ttokens {total}\n'
 
+
 def main():
     args = parser.parse_args()
     assert args.ext_len >= 0, 'extended context length must be non-negative'

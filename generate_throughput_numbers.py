@@ -24,8 +24,10 @@ def ossystem(cmd):
     (stdout, stderr) = p.communicate()
     return stdout.decode('ascii')
 
+
 def getlogs(fn):
     return ossystem(f'ncluster cat {fn}').split('\n')
+
 
 def get_times(fn):
     time_list = []
