@@ -188,7 +188,7 @@ class Corpus:
         else:
             self.vocab = Vocab(*args, **kwargs)
 
-        if self.dataset in ['ptb', 'wt2', 'enwik8', 'text8']:
+        if self.dataset in ['ptb', 'wt2', 'enwik8', 'text8', 'ger-wiki']:
             self.vocab.count_file(os.path.join(path, 'train.txt'))
             self.vocab.count_file(os.path.join(path, 'valid.txt'))
             self.vocab.count_file(os.path.join(path, 'test.txt'))
@@ -209,7 +209,7 @@ class Corpus:
         # the vocab will load from file when build_vocab() is called
         self.vocab.build_vocab()
 
-        if self.dataset in ['ptb', 'wt2', 'wt103']:
+        if self.dataset in ['ptb', 'wt2', 'wt103', 'ger-wiki']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'train.txt'), ordered=True)
             self.valid = self.vocab.encode_file(
@@ -258,7 +258,7 @@ class Corpus:
         data and target have shape (bptt, bsz) and seq_length is a scalar.
         """
         data = self.__getattribute__(split)
-        if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal']:
+        if self.dataset in ['ptb', 'wt2', 'wt103', 'enwik8', 'text8', 'wt103-normal', 'ger-wiki']:
             return LMOrderedIterator(data, *args, **kwargs)
         elif self.dataset == 'lm1b':
             if split in ['valid', 'test']:
@@ -284,7 +284,7 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
     else:
         print('Producing dataset {}...'.format(dataset))
         kwargs = {'max_size': max_size}
-        if dataset in ['wt103', 'wt2', 'wt103-normal']:
+        if dataset in ['wt103', 'wt2', 'wt103-normal', 'ger-wiki']:
             kwargs['special'] = ['<eos>']
             kwargs['lower_case'] = False
         elif dataset == 'ptb':
