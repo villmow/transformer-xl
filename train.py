@@ -388,7 +388,7 @@ logger.info('=' * 100)
 ###############################################################################
 
 
-def evaluate_and_log(eval_iter, split, train_step=-1):
+def evaluate_and_log(optimizer, eval_iter, split, train_step=-1):
     global best_val_loss
     eval_start_time = time.time()
 
@@ -554,7 +554,7 @@ def train(va_iter, optimizer, scheduler):
             last_log_step = train_step
 
         if train_step % args.eval_interval == 0:
-            evaluate_and_log(va_iter, 'val', train_step)
+            evaluate_and_log(optimizer, va_iter, 'val', train_step)
 
         if global_token_count >= args.max_tokens:
             logger.info('End of schedule, staying at current LR')
@@ -637,7 +637,8 @@ def main():
     if args.local:
         model = nn.DataParallel(model, dim=1)
     else:
-        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
+        # Uncomment find_unused_parameters and upgrade to torch 1.1 for adaptive embedding.
+        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank) #, find_unused_parameters=True)
 
     if global_rank == 0:
         event_writer = SummaryWriter(args.logdir)
@@ -672,7 +673,7 @@ def main():
         pass
 
     # Eval one more time.
-    evaluate_and_log(va_iter, 'val', train_step=-1)
+    evaluate_and_log(optimizer, va_iter, 'val', train_step=-1)
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
@@ -680,16 +681,19 @@ def main():
     if os.path.exists(model_file):
         with open(model_file, 'rb') as model_f:
             with timeit('load'):
-                model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(args.local_rank))
-                model = DistributedDataParallel(
-                    model,
-                    device_ids=[args.local_rank],
-                    output_device=args.local_rank)
+                if args.local:
+                    model = torch.load(model_f)
+                else:
+                    model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(args.local_rank))
+                    model = DistributedDataParallel(
+                        model,
+                        device_ids=[args.local_rank],
+                        output_device=args.local_rank)
     else:
         logger.warn('no model file, using current model for loss')
 
     # Run on test data.
-    evaluate_and_log(te_iter, 'test', -1)
+    evaluate_and_log(optimizer, te_iter, 'test', -1)
 
 
 if __name__ == '__main__':
