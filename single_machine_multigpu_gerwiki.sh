@@ -28,4 +28,5 @@ NCCL_DEBUG=VERSION python -m torch.distributed.launch \
     --eval_tgt_len 128 \
     --batch_size 16 \
     --eval_interval 4000 \
-    --checkpoint_each_epoch 0
+    --checkpoint_each_epoch 0 \
+    --skip_auto_shutdown
