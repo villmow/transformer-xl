@@ -5,28 +5,28 @@ NCCL_DEBUG=VERSION python -m torch.distributed.launch \
     --node_rank=0 \
     --master_addr=127.0.0.1 \
     --master_port=6016 train.py \
-    --logdir runs/german_wiki_1 \
+    --logdir runs/german_wiki_2 \
     --seed 1111 \
     --data ${DATA} \
     --dataset ger-wiki \
     --adaptive \
     --log_interval 100 \
-    --n_layer 16 \
+    --n_layer 12 \
     --d_model 512 \
     --n_head 8 \
-    --d_head 48 \
+    --d_head 64 \
     --d_inner 2048 \
     --dropout 0.1 \
     --dropatt 0.0 \
-    --optim lamb \
-    --lr 0.0010416666666666667 \
+    --optim adam \
+    --lr 0.00025 \
     --wd 0 \
     --warmup_tokens 0 \
     --max_tokens 1800000000 \
-    --tgt_len 128 \
-    --mem_len 128 \
+    --tgt_len 512 \
+    --mem_len 512 \
     --eval_tgt_len 128 \
     --batch_size 16 \
-    --eval_interval 4000 \
+    --eval_interval 1000 \
     --checkpoint_each_epoch 0 \
     --skip_auto_shutdown
