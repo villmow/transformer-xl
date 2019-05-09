@@ -199,8 +199,8 @@ max_rank = util.get_world_size()
 torch.cuda.set_device(args.local_rank)
 
 # break into PDB debugger on exception
-if global_rank == 0:
-    util.pdb_on_error()
+# if global_rank == 0:
+#     util.pdb_on_error()
 
 
 class FileLogger:
@@ -288,7 +288,7 @@ def log_tb(tag, val):
     event_writer.add_scalar(tag, val, global_token_count)
 
 
-PT_TZ = pytz.timezone('America/Los_Angeles')
+PT_TZ = pytz.timezone('Europe/Berlin')
 
 
 def current_timestamp() -> str:
@@ -342,7 +342,7 @@ if args.adaptive:
         cutoffs = [60000, 100000, 640000]
         tie_projs += [False] * len(cutoffs)
     elif args.dataset == 'ger-wiki':
-        cutoffs = [5000, 10000, 40000]
+        cutoffs = [5000, 10000, 20000]
         tie_projs += [True] * len(cutoffs)
 
 
