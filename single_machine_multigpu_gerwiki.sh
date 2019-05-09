@@ -23,10 +23,10 @@ NCCL_DEBUG=VERSION python -m torch.distributed.launch \
     --wd 0 \
     --warmup_tokens 0 \
     --max_tokens 1800000000 \
-    --tgt_len 512 \
-    --mem_len 512 \
+    --tgt_len 200 \
+    --mem_len 200 \
     --eval_tgt_len 128 \
-    --batch_size 16 \
+    --batch_size 15 \
     --eval_interval 1000 \
     --checkpoint_each_epoch 0 \
     --skip_auto_shutdown
