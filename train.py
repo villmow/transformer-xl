@@ -527,6 +527,7 @@ def train():
                 else:
                     if args.scheduler == 'cosine':
                         scheduler.step(global_token_count)
+                        print(global_token_count)
             else:
                 scheduler.step(global_token_count)
         else:
